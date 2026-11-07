@@ -5,6 +5,8 @@ built for the **MEDION Akoya E15415** (Comet Lake, board `NP1xCM`).
 
 This is an experimental fork of [OctoDevStudios/MateBookAudio](https://github.com/OctoDevStudios/MateBookAudio), originally developed for the Huawei MateBook D15. Thanks to the original author and contributors. The ES8326 port prioritizes the MEDION; **the original D15 is no longer supported by this branch**.
 
+The MEDION port was developed with AI assistance from **GPT-6.1 Terra**; hardware testing and feedback were provided by the maintainer.
+
 These machines have no HDA codec: audio goes through the Intel cAVS DSP and an I2S codec on
 I2C. AppleALC cannot drive that, so Hackintosh users usually fall back to USB or Bluetooth audio.
 MedionAudio drives the whole path itself:
@@ -116,5 +118,5 @@ More commands in [docs/AUDIO.md](docs/AUDIO.md#4-debugging).
 ## License
 
 - Code: [MIT](LICENSE).
-- `kext/MedionAudio/Firmware/` contains SOF binaries from [sof-bin](https://github.com/thesofproject/sof-bin) under [LICENSES/LICENCE.SOF-Intel](LICENSES/LICENCE.SOF-Intel). Only `sof-cml.ri` is embedded; the included D15 topology is a historical reference and is not loaded by the driver.
+- `kext/MedionAudio/Firmware/sof-cml.ri` is a Sound Open Firmware binary from [sof-bin](https://github.com/thesofproject/sof-bin), embedded in the kext under [LICENSES/LICENCE.SOF-Intel](LICENSES/LICENCE.SOF-Intel).
 - The register sequences follow the Linux `sof_es8336` / `es8326` drivers.
