@@ -2,7 +2,7 @@
 .globl _sof_fw_data
 .globl _sof_fw_size
 _sof_fw_data:
-.incbin "MateBookAudio/Firmware/sof-cml.ri"
+.incbin "MedionAudio/Firmware/sof-cml.ri"
 _sof_fw_data_end:
 
 .section __DATA,__sof_fwsz

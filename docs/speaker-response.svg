@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 400" width="760" height="400" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif">
 <rect width="760" height="400" fill="#ffffff"/>
-<text x="64" y="24" font-size="16" font-weight="600" fill="#1f2328">MateBook D15 speakers — frequency response (internal mic, 1/2-octave smoothing)</text>
+<text x="64" y="24" font-size="16" font-weight="600" fill="#1f2328">Medion D15 speakers — frequency response (internal mic, 1/2-octave smoothing)</text>
 <text x="64" y="42" font-size="12" fill="#59636e">Std. deviation 350 Hz–6 kHz: ±5.7 dB without DSP → ±2.4 dB with the plugin DSP</text>
 <line x1="64" x2="736" y1="344.0" y2="344.0" stroke="#e5e7eb"/><text x="56" y="348.0" font-size="11" fill="#59636e" text-anchor="end">-36</text>
 <line x1="64" x2="736" y1="311.6" y2="311.6" stroke="#e5e7eb"/><text x="56" y="315.6" font-size="11" fill="#59636e" text-anchor="end">-30</text>
@@ -26,5 +26,5 @@
 <polyline points="64.0,344.0 77.4,344.0 90.9,344.0 104.4,344.0 117.9,344.0 131.3,340.1 144.8,312.5 158.2,292.2 171.7,280.5 185.1,271.0 198.6,263.2 212.1,253.8 225.5,240.2 239.0,233.2 252.4,216.0 265.9,191.0 279.3,172.3 292.8,160.1 306.3,151.2 319.7,144.7 333.2,130.7 346.6,122.2 360.1,114.6 373.5,108.9 387.0,104.3 400.5,104.6 413.9,111.0 427.4,123.3 440.8,135.6 454.3,143.2 467.8,150.3 481.2,157.8 494.7,173.3 508.1,182.8 521.6,197.8 535.0,200.6 548.5,194.4 562.0,199.4 575.4,169.7 588.9,162.2 602.3,161.7 615.8,181.0 629.3,225.7 642.7,227.5 656.2,228.4 669.6,241.6 683.1,244.0 696.5,233.4 710.0,237.0 723.5,243.1" fill="none" stroke="#9ca3af" stroke-width="2.5" stroke-linejoin="round" stroke-dasharray="6 4"/>
 <polyline points="64.0,305.2 77.4,292.6 90.9,294.4 104.4,293.7 117.9,311.1 131.3,316.0 144.8,305.6 158.2,274.3 171.7,251.3 185.1,246.0 198.6,240.5 212.1,234.4 225.5,213.7 239.0,206.2 252.4,187.5 265.9,164.2 279.3,145.9 292.8,137.6 306.3,132.2 319.7,129.2 333.2,118.4 346.6,110.7 360.1,106.8 373.5,107.7 387.0,107.9 400.5,106.5 413.9,106.9 427.4,111.5 440.8,115.3 454.3,117.5 467.8,117.5 481.2,122.6 494.7,131.4 508.1,138.1 521.6,145.6 535.0,143.8 548.5,131.0 562.0,134.1 575.4,113.0 588.9,105.8 602.3,105.2 615.8,120.5 629.3,164.6 642.7,166.8 656.2,166.5 669.6,182.9 683.1,177.4 696.5,171.2 710.0,171.5 723.5,182.8" fill="none" stroke="#2563eb" stroke-width="2.5" stroke-linejoin="round" />
 <line x1="506" x2="532" y1="66" y2="66" stroke="#9ca3af" stroke-width="2.5" stroke-dasharray="6 4"/><text x="540" y="70" font-size="12" fill="#1f2328">Raw speakers</text>
-<line x1="506" x2="532" y1="84" y2="84" stroke="#2563eb" stroke-width="2.5"/><text x="540" y="88" font-size="12" fill="#1f2328">With MateBookAudio DSP</text>
+<line x1="506" x2="532" y1="84" y2="84" stroke="#2563eb" stroke-width="2.5"/><text x="540" y="88" font-size="12" fill="#1f2328">With MedionAudio DSP</text>
 </svg>

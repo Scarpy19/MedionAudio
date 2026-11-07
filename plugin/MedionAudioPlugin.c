@@ -176,17 +176,17 @@ enum
 //	multiple devices were supported, this state would need to be encapsulated in one or more structs
 //	so that each object's state can be tracked individually.
 //	Note also that we share a single mutex across all objects to be thread safe for the same reason.
-#define							kPlugIn_BundleID				"com.hackintosh.MateBookAudioPlugin"
+#define							kPlugIn_BundleID				"com.hackintosh.MedionAudioPlugin"
 static pthread_mutex_t			gPlugIn_StateMutex				= PTHREAD_MUTEX_INITIALIZER;
 static UInt32					gPlugIn_RefCount				= 0;
 static AudioServerPlugInHostRef	gPlugIn_Host					= NULL;
 
-#define							kBox_UID						"MateBookAudioBox_UID"
+#define							kBox_UID						"MedionAudioBox_UID"
 static CFStringRef				gBox_Name						= NULL;
 static Boolean					gBox_Acquired					= true;
 
-#define							kDevice_UID						"MateBookAudioDevice_UID"
-#define							kDevice_ModelUID				"MateBookAudioDevice_ModelUID"
+#define							kDevice_UID						"MedionAudioDevice_UID"
+#define							kDevice_ModelUID				"MedionAudioDevice_ModelUID"
 static pthread_mutex_t			gDevice_IOMutex					= PTHREAD_MUTEX_INITIALIZER;
 static Float64					gDevice_SampleRate				= 48000.0;
 static UInt64					gDevice_IOIsRunning				= 0;
@@ -201,7 +201,7 @@ static bool						gStream_Output_IsActive			= true;
 
 //	IOKit UserClient connection to kext
 #include <IOKit/IOKitLib.h>
-#include "MateBookDSP.h"
+#include "MedionDSP.h"
 #include <IOKit/pwr_mgt/IOPMLib.h>
 #include <IOKit/pwr_mgt/IOPM.h>
 #include <IOKit/IOMessage.h>
@@ -2167,14 +2167,14 @@ static OSStatus	CmlSOF_GetDevicePropertyData(AudioServerPlugInDriverRef inDriver
 		case kAudioObjectPropertyName:
 			//	This is the human readable name of the device.
 			FailWithAction(inDataSize < sizeof(CFStringRef), theAnswer = kAudioHardwareBadPropertySizeError, Done, "CmlSOF_GetDevicePropertyData: not enough space for the return value of kAudioObjectPropertyManufacturer for the device");
-			*((CFStringRef*)outData) = CFSTR("MateBook D15 Audio");
+			*((CFStringRef*)outData) = CFSTR("Medion Audio");
 			*outDataSize = sizeof(CFStringRef);
 			break;
 			
 		case kAudioObjectPropertyManufacturer:
 			//	This is the human readable name of the maker of the plug-in.
 			FailWithAction(inDataSize < sizeof(CFStringRef), theAnswer = kAudioHardwareBadPropertySizeError, Done, "CmlSOF_GetDevicePropertyData: not enough space for the return value of kAudioObjectPropertyManufacturer for the device");
-			*((CFStringRef*)outData) = CFSTR("Huawei");
+			*((CFStringRef*)outData) = CFSTR("Medion");
 			*outDataSize = sizeof(CFStringRef);
 			break;
 			
@@ -3919,30 +3919,32 @@ Done:
 
 #pragma mark IO Operations
 
-//	Jack / output: poll GPIO_FLAG (ES8336 0x4f, bit2 = 1 jack unplugged) and route the
-//	amps (GPP_B15/B16: TX=1 speakers, TX=0 headphones, cf. FULL3) on hotplug.
-//	The DSP profile follows (calibrated speakers / flat headphones).
+//	Jack / output: poll HPDET_STA (ES8326 0xFB, bit1 = inserted, bit0 = plain
+//	headphones) and drive the single speakers-enable line
+//	(community 1, pad 8, PADCFG0 0x680) on hotplug.
 static MBDSP					gDSP;
 static volatile int				gMB_Headphones					= 0;
 static pthread_once_t			gMB_JackOnce					= PTHREAD_ONCE_INIT;
 
-static uint32_t MB_AmpPadcfg(uint32_t pin)
+static uint32_t MB_AmpPadcfg(void)
 {
-	uint64_t in = 0x0C, out = 0; uint32_t cnt = 1;
-	uint32_t padbar = 0x0A50;
+	/* Community 1 PADBAR lives at offset 0x0C of that community. */
+	uint64_t in = 0x0001000Cu, out = 0; uint32_t cnt = 1;
+	uint32_t padbar = 0x0600;
 	if(IOConnectCallScalarMethod(gKextConnection, kCmlSOF_ReadGPIO32, &in, 1, &out, &cnt) == KERN_SUCCESS)
 	{
 		uint32_t v = (uint32_t)out & 0xFFFF;
 		if(v >= 0x100 && v < 0x8000) padbar = v;
 	}
-	return padbar + pin * 16;
+	return 0x00010000u | (padbar + 8 * 16);	/* community 1, pad 8 */
 }
 
-static void MB_SetAmp(uint32_t pin, int high)
+static void MB_SetAmp(int on)
 {
-	uint64_t in = MB_AmpPadcfg(pin), out = 0; uint32_t cnt = 1;
+	/* Linux live: raw TXSTATE 1 during playback, 0 at idle. */
+	uint64_t in = MB_AmpPadcfg(), out = 0; uint32_t cnt = 1;
 	if(IOConnectCallScalarMethod(gKextConnection, kCmlSOF_ReadGPIO32, &in, 1, &out, &cnt) != KERN_SUCCESS) return;
-	uint64_t wr[2] = { in, ((uint32_t)out & ~1u) | (high ? 1u : 0u) };
+	uint64_t wr[2] = { in, ((uint32_t)out & ~1u) | (on ? 1u : 0u) };
 	IOConnectCallScalarMethod(gKextConnection, kCmlSOF_WriteGPIO32, wr, 2, NULL, NULL);
 }
 
@@ -3950,11 +3952,10 @@ static void MB_Route(int headphones)
 {
 	/* Real jack hotplug only — a 70 ms anti-pop mute is fine here (rare). */
 	int clamshell = (gFlagsBuffer != NULL) && ((volatile uint8_t*)gFlagsBuffer)[kCmlSOF_FlagOff_ClamshellMuted];
-	uint64_t mute[2] = { 0x30, 0x20 }, unmute[2] = { 0x30, 0x10 };
+	uint64_t mute[2] = { 0x14, 0x03 }, unmute[2] = { 0x14, 0x00 };
 	IOConnectCallScalarMethod(gKextConnection, kCmlSOF_I2CWriteReg, mute, 2, NULL, NULL);
 	int amps = (!headphones && !clamshell) ? 1 : 0;
-	MB_SetAmp(40, amps);
-	MB_SetAmp(41, amps);
+	MB_SetAmp(amps);
 	usleep(70000);
 	IOConnectCallScalarMethod(gKextConnection, kCmlSOF_I2CWriteReg, unmute, 2, NULL, NULL);
 }
@@ -3965,12 +3966,8 @@ static void MB_SoftRestore(int headphones)
 {
 	int clamshell = (gFlagsBuffer != NULL) && ((volatile uint8_t*)gFlagsBuffer)[kCmlSOF_FlagOff_ClamshellMuted];
 	int amps = (!headphones && !clamshell) ? 1 : 0;
-	//	SYS_PDN: 0x00 when the headset mic is active (ADC + MicBias), else 0x06 (Linux).
-	uint64_t pdn[2] = { 0x0d, gDataSource_Input_Master_Value ? 0x00 : 0x06 }, unmute[2] = { 0x30, 0x10 };
-	MB_SetAmp(40, amps);
-	MB_SetAmp(41, amps);
-	IOConnectCallScalarMethod(gKextConnection, kCmlSOF_I2CWriteReg, pdn, 2, NULL, NULL);
-	if(gDataSource_Input_Master_Value) MB_HeadsetMicTune();
+	uint64_t unmute[2] = { 0x14, 0x00 };
+	MB_SetAmp(amps);
 	IOConnectCallScalarMethod(gKextConnection, kCmlSOF_I2CWriteReg, unmute, 2, NULL, NULL);
 }
 
@@ -4054,8 +4051,8 @@ static void* MB_PowerThread(void* inArg)
 	return NULL;
 }
 
-//	Headset mic: like es8316 (Linux), enable MicBias then read GM_NOT_SHORTED (0x02)
-//	in GPIO_FLAG: 1 = mic present (4-pole headset), 0 = plain headphones.
+//	Headset mic: read HPDET_STA bit0 (0 = 4-pole headset with mic, 1 = plain
+//	headphones). The codec keeps MICBIAS/MIC2 configured inside the kext.
 #define kCmlSOF_SetCaptureSource	31
 static void MB_NotifySources(void)
 {
@@ -4073,37 +4070,25 @@ static void MB_NotifySources(void)
 	gPlugIn_Host->PropertiesChanged(gPlugIn_Host, kObjectID_Device, 4, d);
 }
 
-//	ADC sequence from the Everest vendor driver (Rockchip es8316), missing from Linux:
-//	without 0x25=0x08 (ADC decimation mode + high-pass), the ADC outputs digital zero.
+//	ES8326 capture setup (MIC1/MIC2, micbias, ADC unmute) is done inside the
+//	kext by setCaptureMic(); no vendor register pokes are needed here.
 static void MB_HeadsetMicTune(void)
 {
-	static const uint8_t r[][2] = {
-		{ 0x50, 0xA0 }, { 0x51, 0x00 }, { 0x52, 0x00 },	//	test mode (vendor values)
-		{ 0x10, 0x11 }, { 0x12, 0x28 },					//	VMID low, reference
-		{ 0x0e, 0x04 }, { 0x0f, 0x0c },					//	low power (vendor init)
-		{ 0x25, 0x08 },									//	ADC DS mode + HPF
-		{ 0x23, 0x40 },									//	PGA +7 dB (loud voice without clipping the ADC)
-	};
-	for(unsigned i = 0; i < sizeof r / sizeof r[0]; i++)
-	{
-		uint64_t w[2] = { r[i][0], r[i][1] };
-		IOConnectCallScalarMethod(gKextConnection, kCmlSOF_I2CWriteReg, w, 2, NULL, NULL);
-	}
 }
 
 static void MB_UpdateJackSources(int hp)
 {
 	int mic = 0;
 	uint64_t src = hp ? 1 : 0;
-	IOConnectCallScalarMethod(gKextConnection, kCmlSOF_SetCaptureSource, &src, 1, NULL, NULL);	//	MicBias + MIC1
+	IOConnectCallScalarMethod(gKextConnection, kCmlSOF_SetCaptureSource, &src, 1, NULL, NULL);	//	MIC2 when jack in
 	if(hp)
 	{
 		usleep(60000);
-		uint64_t in = 0x4f, out = 0xff; uint32_t cnt = 1;
+		/* ES8326 HPDET_STA (0xFB): bit1 inserted, bit0 0 = 4-pole headset. */
+		uint64_t in = 0xFB, out = 0xff; uint32_t cnt = 1;
 		if(IOConnectCallScalarMethod(gKextConnection, kCmlSOF_I2CReadReg, &in, 1, &out, &cnt) == KERN_SUCCESS && out != 0xff)
-			mic = (out & 0x02) ? 1 : 0;
-		syslog(LOG_NOTICE, "MateBookAudio: jack in, GPIO_FLAG=0x%02llx -> %s", out, mic ? "headset mic" : "headphones only");
-		if(mic) MB_HeadsetMicTune();
+			mic = ((out & 0x02) && !(out & 0x01)) ? 1 : 0;
+		syslog(LOG_NOTICE, "MedionAudio: jack in, HPDET_STA=0x%02llx -> %s", out, mic ? "headset mic" : "headphones only");
 		if(!mic)
 		{
 			src = 0;
@@ -4123,7 +4108,7 @@ static void MB_EnsureConnection(void)
 	pthread_mutex_lock(&m);
 	if(gKextConnection == 0)
 	{
-		io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("MateBookAudioDevice"));
+		io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("MedionAudioDevice"));
 		if(service != 0)
 		{
 			IOServiceOpen(service, mach_task_self(), 0, &gKextConnection);
@@ -4156,9 +4141,9 @@ static void* MB_JackThread(void* inArg)
 					IOConnectCallScalarMethod(gKextConnection, kCmlSOF_StartCapture, NULL, 0, NULL, NULL);
 				}
 			}
-			uint64_t in = 0x4f, out = 0xff; uint32_t cnt = 1;
+			uint64_t in = 0xFB, out = 0xff; uint32_t cnt = 1;
 			if(IOConnectCallScalarMethod(gKextConnection, kCmlSOF_I2CReadReg, &in, 1, &out, &cnt) == KERN_SUCCESS && out != 0xff)
-				gMB_Headphones = (out & 0x04) ? 0 : 1;
+				gMB_Headphones = (out & 0x02) ? 1 : 0;
 			MB_SoftRestore(gMB_Headphones);
 			pthread_mutex_unlock(&gMB_I2CMutex);
 		}
@@ -4167,17 +4152,18 @@ static void* MB_JackThread(void* inArg)
 		pthread_mutex_lock(&gMB_I2CMutex);
 		if(!gMB_PowerPaused)
 		{
-			uint64_t in = 0x4f, out = 0xff; uint32_t cnt = 1;
+			/* ES8326 HPDET_STA (0xFB): bit1 = inserted, bit0 = plain headphones. */
+			uint64_t in = 0xFB, out = 0xff; uint32_t cnt = 1;
 			if(IOConnectCallScalarMethod(gKextConnection, kCmlSOF_I2CReadReg, &in, 1, &out, &cnt) == KERN_SUCCESS &&
 			   out != 0xff)
 			{
-				int hp = (out & 0x04) ? 0 : 1;
+				int hp = (out & 0x02) ? 1 : 0;
 				if(hp != last)
 				{
 					gMB_Headphones = hp;
 					if(last != -1 && gDevice_IOIsRunning > 0) MB_Route(hp);
 					MB_UpdateJackSources(hp);
-					if(last == -1) MB_SoftRestore(hp);	//	first pass: amps + SYS_PDN + mic according to the jack
+					if(last == -1) MB_SoftRestore(hp);	//	first pass: amp + mic according to the jack
 					last = hp;
 				}
 			}
@@ -4232,7 +4218,7 @@ static OSStatus	CmlSOF_StartIO(AudioServerPlugInDriverRef inDriver, AudioObjectI
 		if(gKextConnection == 0)
 		{
 			io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault,
-				IOServiceMatching("MateBookAudioDevice"));
+				IOServiceMatching("MedionAudioDevice"));
 			if(service == 0)
 			{
 				service = IOServiceGetMatchingService(kIOMainPortDefault,
@@ -4290,131 +4276,10 @@ static OSStatus	CmlSOF_StartIO(AudioServerPlugInDriverRef inDriver, AudioObjectI
 			//	Start playback + capture — serialized with the jack thread (I2C shared with the trackpad).
 			pthread_mutex_lock(&gMB_I2CMutex);
 			IOConnectCallScalarMethod(gKextConnection, kCmlSOF_StartPlayback, NULL, 0, NULL, NULL);
-			/* Unmute with Linux play value DAC_SET1=0x10 (not 0x00). */
-			{
-				uint64_t unmuteIn[2] = { 0x30, 0x10 };
-				IOConnectCallScalarMethod(gKextConnection, kCmlSOF_I2CWriteReg, unmuteIn, 2, NULL, NULL);
-			}
 			IOConnectCallScalarMethod(gKextConnection, kCmlSOF_StartCapture, NULL, 0, NULL, NULL);
-			if(gDataSource_Input_Master_Value) MB_HeadsetMicTune();	//	StartCapture restores the kext's ADC settings
 			pthread_mutex_unlock(&gMB_I2CMutex);
 			pthread_once(&gMB_JackOnce, MB_StartJackThread);
-			/* Pre-reboot fallback: old kext used capTag=2 (SOF Host DMA ch1/SD1)
-			 * while arming SD0. If DPIB0 stays 0, reprogram SD0 + PCM_PARAMS
-			 * with stream_tag=1 using BDL at flags page + 128. */
-			if(gFlagsBuffer != NULL && gFlagsBufferSize >= (kCmlSOF_FlagOff_CapBdl + 64) &&
-			   gCaptureBuffer != NULL && gCaptureBufferSize >= 65536)
-			{
-				usleep(30000);
-				uint64_t capPos = 0;
-				uint32_t capPosCnt = 1;
-				IOConnectCallScalarMethod(gKextConnection, kCmlSOF_GetCapPosition, NULL, 0, &capPos, &capPosCnt);
-				uint64_t dpibIn = 0x1084; /* HDA_VS_SDXDPIB for ISS0 */
-				uint64_t dpibOut = 0;
-				uint32_t dpibCnt = 1;
-				IOConnectCallScalarMethod(gKextConnection, kCmlSOF_ReadBAR0_32, &dpibIn, 1, &dpibOut, &dpibCnt);
-				if(capPos == 0 && dpibOut == 0)
-				{
-					uint64_t addrs[5] = {0};
-					uint32_t addrCnt = 5;
-					if(IOConnectCallScalarMethod(gKextConnection, kCmlSOF_GetPhysicalAddrs, NULL, 0, addrs, &addrCnt) == KERN_SUCCESS &&
-					   addrs[1] != 0 && addrs[2] != 0)
-					{
-						IOConnectCallScalarMethod(gKextConnection, kCmlSOF_StopCapture, NULL, 0, NULL, NULL);
-						usleep(2000);
-						const uint32_t numPeriods = 4;
-						const uint32_t period = 16384; /* bytes */
-						const uint32_t audioSize = period * numPeriods;
-						uint64_t bdlPhys = addrs[2] + kCmlSOF_FlagOff_CapBdl;
-						uint64_t audioPhys = addrs[1];
-						volatile uint32_t *bdl = (volatile uint32_t *)(gFlagsBuffer + kCmlSOF_FlagOff_CapBdl);
-						for(uint32_t i = 0; i < numPeriods; i++)
-						{
-							uint64_t p = audioPhys + (uint64_t)i * period;
-							bdl[i*4+0] = (uint32_t)(p & 0xffffffffu);
-							bdl[i*4+1] = (uint32_t)(p >> 32);
-							bdl[i*4+2] = period;
-							bdl[i*4+3] = 1;
-						}
-						/* Program SD0 with stream_tag=1 */
-						{
-							uint64_t in2[2];
-							in2[0] = kCmlSOF_CapSdBase + 2; in2[1] = (kCmlSOF_CapStreamTag & 0xf) << 4;
-							IOConnectCallScalarMethod(gKextConnection, kCmlSOF_WriteBAR0_8, in2, 2, NULL, NULL);
-							in2[0] = kCmlSOF_CapSdBase + 0x08; in2[1] = audioSize;
-							IOConnectCallScalarMethod(gKextConnection, kCmlSOF_WriteBAR0_32, in2, 2, NULL, NULL);
-							in2[0] = kCmlSOF_CapSdBase + 0x12; in2[1] = 0x0041;
-							IOConnectCallScalarMethod(gKextConnection, kCmlSOF_WriteBAR0_16, in2, 2, NULL, NULL);
-							in2[0] = kCmlSOF_CapSdBase + 0x0c; in2[1] = numPeriods - 1;
-							IOConnectCallScalarMethod(gKextConnection, kCmlSOF_WriteBAR0_16, in2, 2, NULL, NULL);
-							in2[0] = kCmlSOF_CapSdBase + 0x18; in2[1] = (uint32_t)(bdlPhys & 0xffffffffu);
-							IOConnectCallScalarMethod(gKextConnection, kCmlSOF_WriteBAR0_32, in2, 2, NULL, NULL);
-							in2[0] = kCmlSOF_CapSdBase + 0x1c; in2[1] = (uint32_t)(bdlPhys >> 32);
-							IOConnectCallScalarMethod(gKextConnection, kCmlSOF_WriteBAR0_32, in2, 2, NULL, NULL);
-						}
-						/* Minimal PCM_PARAMS (stream_tag=1) + TRIG_START via outbox */
-						{
-							uint8_t pcm[108];
-							memset(pcm, 0, sizeof(pcm));
-							*(uint32_t*)(pcm+0) = 108;
-							*(uint32_t*)(pcm+4) = 0x60010000;
-							*(uint32_t*)(pcm+8) = kCmlSOF_Pipe3HostId;
-							*(uint32_t*)(pcm+12) = 84;
-							*(uint32_t*)(pcm+20) = (uint32_t)(audioPhys & 0xffffffffu);
-							*(uint32_t*)(pcm+24) = numPeriods;
-							*(uint32_t*)(pcm+28) = audioSize;
-							*(uint32_t*)(pcm+32) = 1; /* DIR_CAPTURE */
-							*(uint32_t*)(pcm+36) = 2; /* FRAME_S32 */
-							*(uint32_t*)(pcm+40) = 48000;
-							*(uint16_t*)(pcm+44) = (uint16_t)kCmlSOF_CapStreamTag;
-							*(uint32_t*)(pcm+48) = 2;
-							*(uint32_t*)(pcm+52) = 4;
-							*(uint32_t*)(pcm+56) = 4;
-							*(uint32_t*)(pcm+60) = period;
-							*(uint32_t*)(pcm+64) = 1; /* no_stream_position */
-							for(uint32_t i = 0; i < sizeof(pcm); i += 4)
-							{
-								uint64_t in2[2] = { kCmlSOF_Outbox + i, *(uint32_t*)(pcm + i) };
-								IOConnectCallScalarMethod(gKextConnection, kCmlSOF_WriteBAR4_32, in2, 2, NULL, NULL);
-							}
-							uint64_t ctlIn = kCmlSOF_IpcHipcctl, ctlOut = 0; uint32_t ctlCnt = 1;
-							IOConnectCallScalarMethod(gKextConnection, kCmlSOF_ReadBAR4_32, &ctlIn, 1, &ctlOut, &ctlCnt);
-							uint64_t w2[2] = { kCmlSOF_IpcHipcida, 0 };
-							{
-								uint64_t idaIn = kCmlSOF_IpcHipcida, idaOut = 0; uint32_t idaCnt = 1;
-								IOConnectCallScalarMethod(gKextConnection, kCmlSOF_ReadBAR4_32, &idaIn, 1, &idaOut, &idaCnt);
-								w2[1] = idaOut | kCmlSOF_IpcBusy;
-								IOConnectCallScalarMethod(gKextConnection, kCmlSOF_WriteBAR4_32, w2, 2, NULL, NULL);
-							}
-							w2[0] = kCmlSOF_IpcHipcctl; w2[1] = ctlOut | 0x3;
-							IOConnectCallScalarMethod(gKextConnection, kCmlSOF_WriteBAR4_32, w2, 2, NULL, NULL);
-							w2[0] = kCmlSOF_IpcHipcidr; w2[1] = kCmlSOF_IpcBusy;
-							IOConnectCallScalarMethod(gKextConnection, kCmlSOF_WriteBAR4_32, w2, 2, NULL, NULL);
-							usleep(2000);
-							/* TRIG_START */
-							uint32_t trig[3] = { 12, 0x60040000, kCmlSOF_Pipe3HostId };
-							for(uint32_t i = 0; i < 12; i += 4)
-							{
-								uint64_t in2[2] = { kCmlSOF_Outbox + i, trig[i/4] };
-								IOConnectCallScalarMethod(gKextConnection, kCmlSOF_WriteBAR4_32, in2, 2, NULL, NULL);
-							}
-							{
-								uint64_t idaIn = kCmlSOF_IpcHipcida, idaOut = 0; uint32_t idaCnt = 1;
-								IOConnectCallScalarMethod(gKextConnection, kCmlSOF_ReadBAR4_32, &idaIn, 1, &idaOut, &idaCnt);
-								w2[0] = kCmlSOF_IpcHipcida; w2[1] = idaOut | kCmlSOF_IpcBusy;
-								IOConnectCallScalarMethod(gKextConnection, kCmlSOF_WriteBAR4_32, w2, 2, NULL, NULL);
-							}
-							w2[0] = kCmlSOF_IpcHipcidr; w2[1] = kCmlSOF_IpcBusy;
-							IOConnectCallScalarMethod(gKextConnection, kCmlSOF_WriteBAR4_32, w2, 2, NULL, NULL);
-							/* RUN SD0 */
-							uint64_t ctl8In = kCmlSOF_CapSdBase, ctl8Out = 0; uint32_t ctl8Cnt = 1;
-							IOConnectCallScalarMethod(gKextConnection, kCmlSOF_ReadBAR0_8, &ctl8In, 1, &ctl8Out, &ctl8Cnt);
-							uint64_t runIn[2] = { kCmlSOF_CapSdBase, (ctl8Out | 0x1e) };
-							IOConnectCallScalarMethod(gKextConnection, kCmlSOF_WriteBAR0_8, runIn, 2, NULL, NULL);
-						}
-					}
-				}
-			}
+			/* Capture is configured by the kext on SSP0; do not program the old DMIC pipeline here. */
 		}
 
 		gDevice_IOIsRunning = 1;
@@ -4741,7 +4606,7 @@ static OSStatus	CmlSOF_DoIOOperation(AudioServerPlugInDriverRef inDriver, AudioO
 	//	Handle IO operations
 	if(inOperationID == kAudioServerPlugInIOOperationReadInput)
 	{
-		//	Read from DMIC capture buffer: 2ch S32 → stereo Float32 (quirk 0x1B0 dmic2ch)
+		//	ES8326 capture: MIC1 is ADC L and MIC2 is ADC R (Linux DAPM routes).
 		if(gCaptureBuffer != NULL && gKextConnection != 0)
 		{
 			#define kCapCh 2
@@ -4750,26 +4615,41 @@ static OSStatus	CmlSOF_DoIOOperation(AudioServerPlugInDriverRef inDriver, AudioO
 
 			const int32_t *src = (const int32_t *)gCaptureBuffer;
 			Float32 *dst = (Float32 *)ioMainBuffer;
-			// Base gain 32x (DMIC raw signal ~-47dBFS, reduced from 128x to avoid clipping)
+			// Headset boost; soft limiting below reduces clipping on loud input.
 			Float32 micGain = gMute_Input_Master_Value ? 0.0f
-				: ((gDataSource_Input_Master_Value ? 3.0f : 32.0f) * gVolume_Input_Master_Value);	//	headset: PGA +7 dB + x3 digital
+				: (64.0f * gVolume_Input_Master_Value);
 
 			//	DC-blocking filter (high-pass) before the gain: the codec ADC
 			//	outputs a large DC offset on the headset mic.
 			static Float32 sX1[2], sY1[2];
+			static Float32 sHeadsetEnvelope = 0.0f, sHeadsetGate = 1.0f;
 			for(UInt32 f = 0; f < inIOBufferFrameSize; f++)
 			{
 				UInt32 srcFrame = (frameOffset + f) % kCmlSOF_BufferFrames;
-				//	Headset mic (SSP0.IN): the SSP samples one bit too early — the first bit
-				//	received is garbage, the real MSB is the second one. 1-bit shift (measured:
-				//	DC -1.0 -> +0.005, 1 kHz tone reproduced at 1 kHz).
-				int32_t r0 = src[srcFrame * kCapCh + 0], r1 = src[srcFrame * kCapCh + 1];
-				if(gDataSource_Input_Master_Value) { r0 = (int32_t)((uint32_t)r0 << 1); r1 = (int32_t)((uint32_t)r1 << 1); }
+				//	Duplicate the selected mono channel. The D15's headset-specific
+				//	bit shift is not validated for this codec and could corrupt samples.
+				int channel = gDataSource_Input_Master_Value ? 1 : 0;
+				int32_t r0 = src[srcFrame * kCapCh + channel], r1 = r0;
 				Float32 in0 = (Float32)r0 / 2147483647.0f;
 				Float32 in1 = (Float32)r1 / 2147483647.0f;
 				const Float32 kHP = gDataSource_Input_Master_Value ? 0.990f : 0.999f;	//	~77 Hz / ~8 Hz
 				Float32 y0 = in0 - sX1[0] + kHP * sY1[0]; sX1[0] = in0; sY1[0] = y0;
 				Float32 y1 = in1 - sX1[1] + kHP * sY1[1]; sX1[1] = in1; sY1[1] = y1;
+				if(gDataSource_Input_Master_Value)
+				{
+					/* Gentle expander below voice level; suppresses idle hiss, not
+					 * noise underneath speech. Smooth both opening and closing. */
+					Float32 level = fabsf(y0);
+					Float32 envCoef = level > sHeadsetEnvelope ? 0.004f : 0.0002f;
+					sHeadsetEnvelope += (level - sHeadsetEnvelope) * envCoef;
+					Float32 target = (sHeadsetEnvelope - 0.00004f) / 0.00012f;
+					if(target < 0.08f) target = 0.08f;
+					if(target > 1.0f) target = 1.0f;
+					Float32 gateCoef = target > sHeadsetGate ? 0.002f : 0.0002f;
+					sHeadsetGate += (target - sHeadsetGate) * gateCoef;
+					y0 *= sHeadsetGate;
+					y1 *= sHeadsetGate;
+				}
 				Float32 L = y0 * micGain;
 				Float32 R = y1 * micGain;
 				if(R == 0.0f) R = L;  // Fallback to mono duplicate if channel 1 is inactive

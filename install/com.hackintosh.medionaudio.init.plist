@@ -5,17 +5,17 @@
 	<key>KeepAlive</key>
 	<false/>
 	<key>Label</key>
-	<string>com.hackintosh.matebookaudio.init</string>
+	<string>com.hackintosh.medionaudio.init</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>/bin/bash</string>
-		<string>/usr/local/libexec/matebook/matebook_boot_init.sh</string>
+		<string>/usr/local/libexec/medion/medion_boot_init.sh</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>StandardErrorPath</key>
-	<string>/var/log/matebook_audio_init.log</string>
+	<string>/var/log/medion_audio_init.log</string>
 	<key>StandardOutPath</key>
-	<string>/var/log/matebook_audio_init.log</string>
+	<string>/var/log/medion_audio_init.log</string>
 </dict>
 </plist>

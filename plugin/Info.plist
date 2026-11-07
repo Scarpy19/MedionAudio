@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleExecutable</key>
-	<string>MateBookAudioPlugin</string>
+	<string>MedionAudioPlugin</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.hackintosh.MateBookAudioPlugin</string>
+	<string>com.hackintosh.MedionAudioPlugin</string>
 	<key>CFBundlePackageType</key>
 	<string>BNDL</string>
 	<key>CFBundleVersion</key>

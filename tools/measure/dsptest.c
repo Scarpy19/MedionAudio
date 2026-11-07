@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include "../../plugin/MateBookDSP.h"
+#include "../../plugin/MedionDSP.h"
 static MBDSP d;
 int main(void){
   enum{N=48000};

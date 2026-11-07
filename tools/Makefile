@@ -4,10 +4,10 @@ FRAMEWORKS = -framework IOKit -framework CoreFoundation
 
 .PHONY: all clean
 
-all: matebook_ctl
+all: medion_ctl
 
-matebook_ctl: matebook_ctl.c
+medion_ctl: medion_ctl.c
 	$(CC) $(CFLAGS) -o $@ $< $(FRAMEWORKS)
 
 clean:
-	rm -f matebook_ctl
+	rm -f medion_ctl

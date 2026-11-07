@@ -1,8 +1,12 @@
 #!/bin/zsh
+# This legacy D15/ES8336 diagnostic writes incompatible registers on ES8326.
+# Keep its historical source for reference, but never run it on MedionAudio.
+echo "Disabled: this legacy ES8336 register test is unsafe for the ES8326." >&2
+exit 1
 # Headphone A/B test: switches ES8336 codec settings live while music is
 # playing; the listener rates each variant. Results -> $TMPDIR/hp_ab.log
 # Everything is ephemeral (I2C): a reboot or `unmute-speakers` restores the kext state.
-CTL="sudo $(dirname "$0")/matebook_ctl"
+CTL="sudo $(dirname "$0")/medion_ctl"
 LOG=${TMPDIR:-/tmp}/hp_ab.log
 w(){ $CTL wri2c $1 $2 >/dev/null 2>&1; }
 r(){ $CTL rdi2c $1 2>/dev/null | grep -oE '0x[0-9a-f]+$'; }
@@ -32,7 +36,7 @@ NAMES+=("H  left only in both ears");                  CMDS+=("w 0x30 0x50")
 NAMES+=("I  right only in both ears");                 CMDS+=("w 0x30 0x90")
 
 echo "=== HP A/B $(date) ===" >> $LOG
-echo "Play music WITH vocals (MateBook output), headphones on."
+echo "Play music WITH vocals (Medion output), headphones on."
 echo "For each variant: listen, then type a 0-5 score + a word (e.g. '4 vocals ok') and press Enter."
 for i in {1..${#NAMES}}; do
   base; eval "${CMDS[$i]}"

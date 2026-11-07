@@ -11,7 +11,7 @@
 #include <sys/time.h>
 #include <IOKit/IOKitLib.h>
 
-/* Must match MateBookAudioDevice.hpp selectors */
+/* Must match MedionAudioDevice.hpp selectors */
 enum {
     kSel_StartPlayback  = 0,
     kSel_StopPlayback   = 1,
@@ -70,64 +70,128 @@ enum {
  * reserved bit, not MCLK_AON (which is BIT(4)). */
 #define SOF_SSP_CLKS_CONTROL  0u
 
-/* Amp enables, from the Ubuntu pinctrl dump on this machine with sound
- * confirmed audible: gpio-559 "speakers-enable" = pin 40 = GPP_B15 and
- * gpio-560 "headphone-enable" = pin 41 = GPP_B16. GPP_B is pins 25..50, which
- * /proc/iomem puts in community 0 (PCR port 0x6E). padcfg = PADBAR(0xA50) +
- * pin*16. The old C1 0xB50/0xB60 were pads 16/17 of community 1, i.e.
- * GPP_D16/D17 = ISH_UART0_CTSB and DMIC_CLK_1.
- *
- * PADCFG0 bit 0 (GPIOTXSTATE) 1 = amp ON: Linux goes 0x44000200 -> 0x44000201
- * when the internal speakers come up, and drives BOTH pads together (speakers
- * = both 1, headphones = both 0, since the headphone output uses the codec's
- * own charge pump).
- *
+/* Speaker amplifier enable, from the MEDION E15415 DSDT:
+ *   ESSX._CRS -> GpioIo "speakers-enable", GNUM(0x04030008) = group 3 pin 8.
+ *   GPCL[3] = { PCR 0x006D0000, 24 pins, PADBAR 0x0600 } -> GPIO community 1
+ *   (0xFD6D0000), pad index 8, PADCFG0 = 0x600 + 8*16 = 0x680.
+ * Linux reports gpio-616 active-low but the machine driver inverts its DAPM
+ * state: observed raw TXSTATE is 1 during playback and 0 at idle.
  * High 16 bits = community for the kext. */
 #define GPIO_COMM0       0x00000000u
 #define GPIO_COMM1       0x00010000u
-#define GPIO_SPK_PADCFG  (GPIO_COMM0 | 0x0CD0u)   /* pin 40, GPP_B15 */
-#define GPIO_HP_PADCFG   (GPIO_COMM0 | 0x0CE0u)   /* pin 41, GPP_B16 */
+#define GPIO_SPK_PADCFG  (GPIO_COMM1 | 0x0680u)   /* community 1, pad 8 */
 #define CAP_BUFFER_SIZE  131072u  /* 2ch S32 × 16384 frames */
 #define CAP_CHANNELS     2
 #define ROM_STATUS       0x80000u
 #define ROM_STATUS_EX    0x80004u
 #define FSR_FW_ENTERED   0x5u
 
-/* ES8336 one-shot I2C map — must match ES8336Codec.hpp */
-#define ES8316_RESET           0x00
-#define ES8316_RESET_CSM_ON    0x80
-#define ES8316_CLKMGR_CLKSW    0x01
-#define ES8316_CLKMGR_CLKSEL   0x02
-#define ES8316_CLKMGR_ADCOSR   0x03
-#define ES8316_CLKMGR_ADCDIV1  0x04
-#define ES8316_CLKMGR_ADCDIV2  0x05
-#define ES8316_CLKMGR_DACDIV1  0x06
-#define ES8316_CLKMGR_DACDIV2  0x07
-#define ES8316_CLKMGR_CPDIV    0x08
-#define ES8316_SERDATA1        0x09
-#define ES8316_SERDATA_ADC     0x0A
-#define ES8316_SERDATA_DAC     0x0B
-#define ES8316_SYS_VMIDSEL     0x0C
-#define ES8316_SYS_PDN         0x0D
-#define ES8316_SYS_LP1         0x0E
-#define ES8316_SYS_LP2         0x0F
-#define ES8316_SYS_REF         0x12
-#define ES8316_HPMIX_SEL       0x13
-#define ES8316_HPMIX_SWITCH    0x14
-#define ES8316_HPMIX_PDN       0x15
-#define ES8316_HPMIX_VOL       0x16
-#define ES8316_CPHP_OUTEN      0x17
-#define ES8316_CPHP_ICAL_VOL   0x18
-#define ES8316_CPHP_PDN1       0x19
-#define ES8316_CPHP_PDN2       0x1A
-#define ES8316_CPHP_LDOCTL     0x1B
-#define ES8316_DAC_PDN         0x2F
-#define ES8316_DAC_SET1        0x30
-#define ES8316_DAC_SET2        0x31
-#define ES8316_DAC_SET3        0x32
-#define ES8316_DAC_VOLL        0x33
-#define ES8316_DAC_VOLR        0x34
-#define ES8316_GPIO_DEBOUNCE   0x4E
+/* ES8326 register map — must match ES8326Codec.hpp (Linux es8326.h). */
+#define ES8326_RESET            0x00
+#define ES8326_CLK_CTL          0x01
+#define ES8326_CLK_INV          0x02
+#define ES8326_CLK_RESAMPLE     0x03
+#define ES8326_CLK_DIV1         0x04
+#define ES8326_CLK_DIV2         0x05
+#define ES8326_CLK_DLL          0x06
+#define ES8326_CLK_MUX          0x07
+#define ES8326_CLK_ADC_SEL      0x08
+#define ES8326_CLK_DAC_SEL      0x09
+#define ES8326_CLK_ADC_OSR      0x0A
+#define ES8326_CLK_DAC_OSR      0x0B
+#define ES8326_CLK_DIV_CPC      0x0C
+#define ES8326_CLK_DIV_BCLK     0x0D
+#define ES8326_CLK_TRI          0x0E
+#define ES8326_CLK_DIV_LRCK     0x0F
+#define ES8326_CLK_VMIDS1       0x10
+#define ES8326_CLK_VMIDS2       0x11
+#define ES8326_CLK_CAL_TIME     0x12
+#define ES8326_FMT              0x13
+#define ES8326_DAC_MUTE         0x14
+#define ES8326_ADC_MUTE         0x15
+#define ES8326_ANA_PDN          0x16
+#define ES8326_PGA_PDN          0x17
+#define ES8326_VMIDSEL          0x18
+#define ES8326_ANA_LP           0x19
+#define ES8326_ANA_DMS          0x1A
+#define ES8326_ANA_MICBIAS      0x1B
+#define ES8326_ANA_VSEL         0x1C
+#define ES8326_SYS_BIAS         0x1D
+#define ES8326_BIAS_SW1         0x1E
+#define ES8326_BIAS_SW2         0x1F
+#define ES8326_BIAS_SW3         0x20
+#define ES8326_BIAS_SW4         0x21
+#define ES8326_VMIDLOW          0x22
+#define ES8326_PGAGAIN          0x23
+#define ES8326_HP_DRIVER        0x24
+#define ES8326_DAC2HPMIX        0x25
+#define ES8326_HP_VOL           0x26
+#define ES8326_HP_CAL           0x27
+#define ES8326_HP_DRIVER_REF    0x28
+#define ES8326_ADC_SCALE        0x29
+#define ES8326_ADC1_SRC         0x2A
+#define ES8326_ADC2_SRC         0x2B
+#define ES8326_ADC1_VOL         0x2C
+#define ES8326_ADC2_VOL         0x2D
+#define ES8326_ADC_RAMPRATE     0x2E
+#define ES8326_ADC_DRE          0x2F
+#define ES8326_ADC_DRE_GAIN     0x30
+#define ES8326_ADC_DRE_GATE     0x31
+#define ES8326_ALC_RECOVERY     0x32
+#define ES8326_ALC_LEVEL        0x33
+#define ES8326_ADC_HPFS1        0x34
+#define ES8326_ADC_HPFS2        0x35
+#define ES8326_ADC_EQ           0x36
+#define ES8326_HP_OFFSET_CAL    0x4A
+#define ES8326_HPL_OFFSET_INI   0x4B
+#define ES8326_HPR_OFFSET_INI   0x4C
+#define ES8326_DAC_DSM          0x4D
+#define ES8326_DAC_RAMPRATE     0x4E
+#define ES8326_DAC_VPPSCALE     0x4F
+#define ES8326_DACL_VOL         0x50
+#define ES8326_DRC_RECOVERY     0x53
+#define ES8326_DRC_WINSIZE      0x54
+#define ES8326_DAC_CROSSTALK    0x55
+#define ES8326_HPJACK_TIMER     0x56
+#define ES8326_HPDET_TYPE       0x57
+#define ES8326_INT_SOURCE       0x58
+#define ES8326_INTOUT_IO        0x59
+#define ES8326_SDINOUT1_IO      0x5A
+#define ES8326_SDINOUT23_IO     0x5B
+#define ES8326_JACK_PULSE       0x5C
+#define ES8326_DACR_VOL         0xF4
+#define ES8326_SPKL_VOL         0xF5
+#define ES8326_SPKR_VOL         0xF6
+#define ES8326_HP_MISC          0xF7
+#define ES8326_CTIA_OMTP_STA    0xF8
+#define ES8326_PULLUP_CTL       0xF9
+#define ES8326_CSM_I2C_STA      0xFA
+#define ES8326_HPDET_STA        0xFB
+#define ES8326_CSM_MUTE_STA     0xFC
+#define ES8326_CHIP_ID1         0xFD
+#define ES8326_CHIP_ID2         0xFE
+#define ES8326_CHIP_VERSION     0xFF
+
+#define ES8326_CSM_ON           (1 << 7)
+#define ES8326_MUTE_MASK        (3 << 0)
+#define ES8326_MUTE             (3 << 0)
+#define ES8326_CLK_ON           (0x7f << 0)
+#define ES8326_S24_LE           (0 << 2)
+#define ES8326_MIC_SEL_MASK     (3 << 4)
+#define ES8326_MIC1_SEL         (1 << 4)
+#define ES8326_MIC2_SEL         (1 << 5)
+#define ES8326_HP_OFF           0
+#define ES8326_HP_FORCE_CAL     ((1 << 7) | (1 << 3))
+#define ES8326_HP_ON            ((7 << 4) | (7 << 0))
+#define ES8326_ADC_SRC_ANA      0
+#define ES8326_HP_DET_SRC_PIN9  (1 << 4)
+#define ES8326_HP_TYPE_AUTO     (1 << 0)
+#define ES8326_INT_SRC_PIN9     (1 << 3)
+#define ES8326_IO_INPUT         0
+#define ES8326_HPINSERT_FLAG    (1 << 1)
+#define ES8326_HPBUTTON_FLAG    (1 << 0)
+#define ES8326_VERSION_B        (3 << 0)
+#define ES8326_I2C_ADDR         0x19
 
 static void print_cfprop(io_service_t svc, CFStringRef key, const char *label) {
     CFTypeRef prop = IORegistryEntryCreateCFProperty(svc, key, kCFAllocatorDefault, 0);
@@ -157,18 +221,18 @@ static void dump_hdas_props(void) {
         return;
     }
     printf("[*] HDAS registry props:\n");
-    print_cfprop(hdas, CFSTR("MateBookAudioProbed"), "Probed");
-    print_cfprop(hdas, CFSTR("MateBookAudioStarted"), "Started");
-    print_cfprop(hdas, CFSTR("MateBookAudio_Step"), "Step");
-    print_cfprop(hdas, CFSTR("MateBookAudioDSPStatus"), "DSPStatus");
-    print_cfprop(hdas, CFSTR("MateBookAudioCodec"), "Codec");
-    print_cfprop(hdas, CFSTR("MateBookAudio_DSPFail"), "DSPFail");
-    print_cfprop(hdas, CFSTR("MateBookAudio_ROMStatus"), "ROMStatus");
+    print_cfprop(hdas, CFSTR("MedionAudioProbed"), "Probed");
+    print_cfprop(hdas, CFSTR("MedionAudioStarted"), "Started");
+    print_cfprop(hdas, CFSTR("MedionAudio_Step"), "Step");
+    print_cfprop(hdas, CFSTR("MedionAudioDSPStatus"), "DSPStatus");
+    print_cfprop(hdas, CFSTR("MedionAudioCodec"), "Codec");
+    print_cfprop(hdas, CFSTR("MedionAudio_DSPFail"), "DSPFail");
+    print_cfprop(hdas, CFSTR("MedionAudio_ROMStatus"), "ROMStatus");
     IOObjectRelease(hdas);
 }
 
 static void dump_device_props(io_service_t service) {
-    printf("[*] MateBookAudioDevice props:\n");
+    printf("[*] MedionAudioDevice props:\n");
     print_cfprop(service, CFSTR("Status"), "Status");
     print_cfprop(service, CFSTR("DSPStatus"), "DSPStatus");
     print_cfprop(service, CFSTR("Codec"), "Codec");
@@ -177,7 +241,7 @@ static void dump_device_props(io_service_t service) {
     print_cfprop(service, CFSTR("Topology"), "Topology");
 }
 
-static uint32_t amp_padcfg(io_connect_t c, uint32_t pin);
+static uint32_t amp_padcfg(io_connect_t c);
 
 static kern_return_t gpio_rd(io_connect_t c, uint32_t off, uint32_t *val) {
     uint64_t in = off, out = 0;
@@ -210,92 +274,171 @@ static uint8_t i2c_read_reg(io_connect_t c, uint8_t reg) {
     return (uint8_t)out;
 }
 
-/* Canonical 19.2 MHz / S16 slave (AUDIO_HUAWEI validated SERDATA 0x06 + HPMIX 0xBB). */
-static void apply_codec_v19_slave(io_connect_t c) {
-    /* SYS_PDN 0x0d: DAPM bits are inverted. 0x3F = all analog OFF (Linux idle).
-     * Linux paplay headphones = 0x06 (DAC Vref+Bias+Analog ON; ADC bits off).
-     * This was the silence root cause — playtone never cleared 0x3F. */
-    i2c_write_reg(c, 0x0d, 0x06);                 /* ES8316_SYS_PDN */
-    i2c_write_reg(c, 0x0e, 0x00);                 /* SYS_LP1 */
-    i2c_write_reg(c, 0x0f, 0x00);                 /* SYS_LP2 */
-    i2c_write_reg(c, ES8316_CLKMGR_CLKSW, 0x7F); /* keep DAC/CP clocks; Linux uses 0x77 */
-    i2c_write_reg(c, ES8316_CLKMGR_CLKSEL, 0x00);
-    i2c_write_reg(c, ES8316_CLKMGR_ADCDIV1, 0x01);
-    i2c_write_reg(c, ES8316_CLKMGR_ADCDIV2, 0x90);
-    i2c_write_reg(c, ES8316_CLKMGR_DACDIV1, 0x01);
-    i2c_write_reg(c, ES8316_CLKMGR_DACDIV2, 0x90);
-    i2c_write_reg(c, ES8316_SERDATA1, 0x06);      /* bclk_div=6 slave S16 */
-    i2c_write_reg(c, ES8316_SERDATA_ADC, 0x0C);   /* I2S 16-bit */
-    i2c_write_reg(c, ES8316_SERDATA_DAC, 0x0C);
-    i2c_write_reg(c, 0x15, 0x00);                 /* HPMIX_PDN — Linux play 0x00 */
-    i2c_write_reg(c, ES8316_HPMIX_SWITCH, 0x88);
-    i2c_write_reg(c, ES8316_HPMIX_VOL, 0x00);     /* −12 dB (Linux playing) */
-    i2c_write_reg(c, ES8316_CPHP_ICAL_VOL, 0x00);
-    i2c_write_reg(c, ES8316_CPHP_OUTEN, 0x66);
-    i2c_write_reg(c, ES8316_DAC_PDN, 0x00);
-    i2c_write_reg(c, ES8316_DAC_VOLL, 0x17);
-    i2c_write_reg(c, ES8316_DAC_VOLR, 0x17);
-    i2c_write_reg(c, ES8316_DAC_SET1, 0x10);
+/* ---- ES8326 codec helpers (Linux sound/soc/codecs/es8326.c) ---- */
+
+/* Full init sequence (es8326_init + version-B calibration). Leaves the DAC
+ * muted and the speaker amp off; call apply_codec_play() afterwards. */
+static void apply_codec_init(io_connect_t c) {
+    uint8_t version = i2c_read_reg(c, ES8326_CHIP_VERSION);
+
+    i2c_write_reg(c, ES8326_RESET, 0x1f);
+    i2c_write_reg(c, ES8326_VMIDSEL, 0x3e);
+    i2c_write_reg(c, ES8326_ANA_LP, 0xf0);
+    usleep(12000);
+    i2c_write_reg(c, ES8326_HPJACK_TIMER, 0xd9);
+    i2c_write_reg(c, ES8326_ANA_MICBIAS, 0xd8);
+    i2c_write_reg(c, ES8326_HPDET_TYPE, 0x83);
+    i2c_write_reg(c, ES8326_CLK_RESAMPLE, 0x05);
+    i2c_write_reg(c, ES8326_CLK_DIV_CPC, 0x89);
+    i2c_write_reg(c, ES8326_CLK_CTL, ES8326_CLK_ON);
+    i2c_write_reg(c, ES8326_RESET, 0x17);
+    i2c_write_reg(c, ES8326_HP_MISC, 0x3d);
+    i2c_write_reg(c, ES8326_PULLUP_CTL, 0x00);
+    i2c_write_reg(c, ES8326_HP_VOL, 0xc4);
+    i2c_write_reg(c, ES8326_HP_DRIVER, 0xa7);
+    usleep(3000);
+    i2c_write_reg(c, ES8326_HP_DRIVER_REF, 0x23);
+    i2c_write_reg(c, ES8326_HP_DRIVER_REF, 0x33);
+    i2c_write_reg(c, ES8326_HP_DRIVER, 0xa1);
+    i2c_write_reg(c, ES8326_CLK_INV, 0x00);
+    i2c_write_reg(c, ES8326_CLK_VMIDS1, 0xc4);
+    i2c_write_reg(c, ES8326_CLK_VMIDS2, 0x81);
+    i2c_write_reg(c, ES8326_CLK_CAL_TIME, 0x00);
+
+    if (version >= ES8326_VERSION_B) {
+        i2c_write_reg(c, ES8326_CLK_INV, 0xc0);
+        i2c_write_reg(c, ES8326_CLK_DIV1, 0x03);
+        i2c_write_reg(c, ES8326_CLK_DLL, 0x30);
+        i2c_write_reg(c, ES8326_CLK_MUX, 0xed);
+        i2c_write_reg(c, ES8326_CLK_DAC_SEL, 0x08);
+        i2c_write_reg(c, ES8326_CLK_TRI, 0xc1);
+        i2c_write_reg(c, ES8326_DAC_MUTE, 0x03);
+        i2c_write_reg(c, ES8326_ANA_VSEL, 0x7f);
+        i2c_write_reg(c, ES8326_VMIDLOW, 0x23);
+        i2c_write_reg(c, ES8326_DAC2HPMIX, 0x88);
+        usleep(18000);
+        i2c_write_reg(c, ES8326_HP_OFFSET_CAL, 0x8c);
+        usleep(18000);
+        i2c_write_reg(c, ES8326_RESET, 0xc0);
+        usleep(18000);
+        i2c_write_reg(c, ES8326_HP_OFFSET_CAL, ES8326_HP_OFF);
+        if ((i2c_read_reg(c, ES8326_CSM_MUTE_STA) & 0xf0) != 0x40) usleep(50000);
+        i2c_write_reg(c, ES8326_HP_CAL, 0xd4);
+        usleep(200000);
+        i2c_write_reg(c, ES8326_HP_CAL, 0x4d);
+        usleep(200000);
+        i2c_write_reg(c, ES8326_HP_CAL, ES8326_HP_OFF);
+        uint8_t offL = i2c_read_reg(c, ES8326_HPL_OFFSET_INI);
+        uint8_t offR = i2c_read_reg(c, ES8326_HPR_OFFSET_INI);
+        i2c_write_reg(c, ES8326_HP_OFFSET_CAL, 0x8c);
+        i2c_write_reg(c, ES8326_HPL_OFFSET_INI, offL);
+        i2c_write_reg(c, ES8326_HPR_OFFSET_INI, offR);
+        i2c_write_reg(c, ES8326_CLK_INV, 0x00);
+    }
+
+    i2c_write_reg(c, ES8326_DAC_CROSSTALK, 0xaa);
+    i2c_write_reg(c, ES8326_DAC_RAMPRATE, 0x00);
+    i2c_write_reg(c, ES8326_HP_CAL, 0x00);
+    i2c_write_reg(c, ES8326_ANA_LP, 0xf0);
+    i2c_write_reg(c, ES8326_ANA_VSEL, 0x7f);
+    i2c_write_reg(c, ES8326_VMIDLOW, 0x03);
+    i2c_write_reg(c, ES8326_DAC_DSM, 0x08);
+    i2c_write_reg(c, ES8326_DAC_VPPSCALE, 0x15);
+
+    uint8_t hptype = (uint8_t)(0x80 | ES8326_HP_DET_SRC_PIN9 | ES8326_HP_TYPE_AUTO);
+    if (version < ES8326_VERSION_B) hptype |= 0x04;
+    i2c_write_reg(c, ES8326_HPDET_TYPE, hptype);
+    usleep(7000);
+    i2c_write_reg(c, ES8326_ANA_MICBIAS,
+                  (uint8_t)(i2c_read_reg(c, ES8326_ANA_MICBIAS) | 0x0c));
+    usleep(60000);
+    i2c_write_reg(c, ES8326_HPDET_TYPE,
+                  (uint8_t)(i2c_read_reg(c, ES8326_HPDET_TYPE) & ~0x03));
+    i2c_write_reg(c, ES8326_INTOUT_IO, 0x00);
+    i2c_write_reg(c, ES8326_SDINOUT1_IO, ES8326_IO_INPUT);
+    i2c_write_reg(c, ES8326_SDINOUT23_IO, ES8326_IO_INPUT);
+    i2c_write_reg(c, ES8326_ANA_PDN, 0x00);
+    i2c_write_reg(c, ES8326_RESET, ES8326_CSM_ON);
+    i2c_write_reg(c, ES8326_PGAGAIN,
+                  (uint8_t)((i2c_read_reg(c, ES8326_PGAGAIN) & ~ES8326_MIC_SEL_MASK) | ES8326_MIC1_SEL));
+    i2c_write_reg(c, ES8326_DAC_MUTE, ES8326_MUTE);
+    i2c_write_reg(c, ES8326_ADC_MUTE, 0x0f);
+    i2c_write_reg(c, ES8326_CLK_DIV_LRCK, 0xff);
+    i2c_write_reg(c, ES8326_ADC1_SRC, 0x44);
+    i2c_write_reg(c, ES8326_ADC2_SRC, 0x66);
+    i2c_write_reg(c, ES8326_ANA_MICBIAS,
+                  (uint8_t)(i2c_read_reg(c, ES8326_ANA_MICBIAS) & ~0x0c));
+    if (version > ES8326_VERSION_B) {
+        i2c_write_reg(c, ES8326_ANA_MICBIAS,
+                      (uint8_t)((i2c_read_reg(c, ES8326_ANA_MICBIAS) & ~0x73) | 0x10));
+        i2c_write_reg(c, ES8326_VMIDSEL,
+                      (uint8_t)(i2c_read_reg(c, ES8326_VMIDSEL) | 0x40));
+    }
+    usleep(200000);
+    i2c_write_reg(c, ES8326_INT_SOURCE, ES8326_INT_SRC_PIN9);
+
+    /* MCLK = 19.2 MHz, LRCK = 48 kHz (coeff_div_v3 {400, 48000, 19200000}). */
+    i2c_write_reg(c, ES8326_CLK_DIV1,    version == 0 ? 0xE9 : 0xE4);
+    i2c_write_reg(c, ES8326_CLK_DIV2,    0x04);
+    i2c_write_reg(c, ES8326_CLK_DLL,     version == 0 ? 0x0F : 0x35);
+    i2c_write_reg(c, ES8326_CLK_MUX,     0x6d);
+    i2c_write_reg(c, ES8326_CLK_ADC_SEL, version == 0 ? 0x4A : 0xCA);
+    i2c_write_reg(c, ES8326_CLK_DAC_SEL, 0x0A);
+    i2c_write_reg(c, ES8326_CLK_ADC_OSR, 0x1F);
+    i2c_write_reg(c, ES8326_CLK_DAC_OSR, 0x1F);
+
+    i2c_write_reg(c, ES8326_FMT, ES8326_S24_LE);
+
+    i2c_write_reg(c, ES8326_ADC1_SRC, 0x00);
+    i2c_write_reg(c, ES8326_ADC2_SRC, 0x00);
+    i2c_write_reg(c, ES8326_PGAGAIN,
+                  (uint8_t)((i2c_read_reg(c, ES8326_PGAGAIN) & ~ES8326_MIC_SEL_MASK) | ES8326_MIC1_SEL));
+    i2c_write_reg(c, ES8326_PGAGAIN,
+                  (uint8_t)((i2c_read_reg(c, ES8326_PGAGAIN) & ~0x0f) | 0x04));
+    i2c_write_reg(c, ES8326_ADC1_VOL, 0xbf);
+    i2c_write_reg(c, ES8326_ADC2_VOL, 0xbf);
+    i2c_write_reg(c, ES8326_DACL_VOL, 0xbf);
+    i2c_write_reg(c, ES8326_DACR_VOL, 0xbf);
 }
 
-/*
- * Byte-for-byte replica of the Linux FULL3 "paplay headphones" i2cdump, which
- * is the only register set proven to make this board audible. 24-bit word
- * length (SERDATA_DAC LEN_24 = 0x00) to match tplg slot width 25.
- * Volumes match FULL3 playing-speakers: HPMIX 0x00 (−12 dB) + DAC 0x17
- * (~−11.5 dB). Our old 0xBB/0x00 was ~24 dB hotter and hard-clipped the amps.
- */
-/* Always 0 dB HPMIX/DAC — speakers validated loud; HP attenuate was sticky and
- * left speakers almost silent after route flips. GPIO alone selects SPK vs HP. */
-static void apply_codec_linux_s24(io_connect_t c) {
-    i2c_write_reg(c, 0x0d, 0x06);                 /* SYS_PDN analog on */
-    i2c_write_reg(c, 0x0e, 0x00);
-    i2c_write_reg(c, 0x0f, 0x00);
-    i2c_write_reg(c, ES8316_CLKMGR_CLKSW, 0x77);
-    i2c_write_reg(c, ES8316_CLKMGR_CLKSEL, 0x00);
-    i2c_write_reg(c, ES8316_CLKMGR_ADCDIV1, 0x11);
-    i2c_write_reg(c, ES8316_CLKMGR_ADCDIV2, 0x90);
-    i2c_write_reg(c, ES8316_CLKMGR_DACDIV1, 0x11);
-    i2c_write_reg(c, ES8316_CLKMGR_DACDIV2, 0x90);
-    i2c_write_reg(c, ES8316_SERDATA1, 0x04);
-    i2c_write_reg(c, ES8316_SERDATA_ADC, 0x40);
-    i2c_write_reg(c, ES8316_SERDATA_DAC, 0x00);
-    i2c_write_reg(c, 0x15, 0x00);
-    i2c_write_reg(c, ES8316_HPMIX_SWITCH, 0x88);
-    i2c_write_reg(c, ES8316_HPMIX_VOL, 0xBB);      /* 0 dB */
-    i2c_write_reg(c, ES8316_CPHP_ICAL_VOL, 0x00);
-    i2c_write_reg(c, ES8316_CPHP_OUTEN, 0x66);
-    i2c_write_reg(c, ES8316_DAC_PDN, 0x00);
-    i2c_write_reg(c, ES8316_DAC_VOLL, 0x00);       /* 0 dB */
-    i2c_write_reg(c, ES8316_DAC_VOLR, 0x00);
-    i2c_write_reg(c, ES8316_DAC_SET1, 0x10);
+/* Playback unmute (Linux es8326_mute(mute=0)). */
+static void apply_codec_play(io_connect_t c) {
+    i2c_write_reg(c, ES8326_CLK_INV, 0x00);
+    i2c_write_reg(c, ES8326_CLK_MUX, 0x6d);
+    i2c_write_reg(c, ES8326_DAC_DSM,
+                  (uint8_t)(i2c_read_reg(c, ES8326_DAC_DSM) | 0x01));
+    usleep(2000);
+    i2c_write_reg(c, ES8326_DAC_DSM,
+                  (uint8_t)(i2c_read_reg(c, ES8326_DAC_DSM) & ~0x01));
+    usleep(2000);
+    i2c_write_reg(c, ES8326_HP_DRIVER_REF, 0x33);
+    i2c_write_reg(c, ES8326_HP_DRIVER, 0xa1);
+    i2c_write_reg(c, ES8326_HP_CAL, ES8326_HP_ON);
+    i2c_write_reg(c, ES8326_DAC_MUTE, 0x00);
 }
 
-static void apply_linux_play_codec(io_connect_t c) {
-    apply_codec_linux_s24(c);
-}
-
-static void apply_linux_play_codec_route(io_connect_t c, int speakers) {
-    (void)speakers;
-    apply_codec_linux_s24(c);
-}
-
-static void apply_codec_linux_s24_spk(io_connect_t c) {
-    apply_codec_linux_s24(c);
+/* Playback mute (Linux es8326_mute(mute=1)). */
+static void apply_codec_mute(io_connect_t c) {
+    i2c_write_reg(c, ES8326_HP_CAL, ES8326_HP_OFF);
+    i2c_write_reg(c, ES8326_DAC_MUTE, ES8326_MUTE);
+    i2c_write_reg(c, ES8326_HP_DRIVER_REF, 0x03);
 }
 
 static void dump_play_snapshot(io_connect_t c) {
     static const uint8_t regs[] = {
-        0x00, 0x01, 0x04, 0x05, 0x06, 0x07, 0x09, 0x0a, 0x0b, 0x0c,
-        0x0d, 0x14, 0x15, 0x16, 0x17, 0x18, 0x2f, 0x30, 0x33, 0x34, 0x4f
+        ES8326_RESET, ES8326_CLK_CTL, ES8326_CLK_DIV1, ES8326_CLK_DIV2,
+        ES8326_CLK_DLL, ES8326_CLK_MUX, ES8326_CLK_ADC_SEL, ES8326_CLK_DAC_SEL,
+        ES8326_CLK_ADC_OSR, ES8326_CLK_DAC_OSR, ES8326_FMT, ES8326_DAC_MUTE,
+        ES8326_ADC_MUTE, ES8326_ANA_PDN, ES8326_PGAGAIN, ES8326_HP_DRIVER,
+        ES8326_HP_CAL, ES8326_HP_DRIVER_REF, ES8326_DACL_VOL, ES8326_DACR_VOL,
+        ES8326_HPDET_STA, ES8326_CHIP_VERSION
     };
-    uint32_t hp = 0, spk = 0;
-    gpio_rd(c, amp_padcfg(c, 41), &hp);
-    gpio_rd(c, amp_padcfg(c, 40), &spk);
+    uint32_t pad = 0;
+    gpio_rd(c, amp_padcfg(c), &pad);
     printf("==== dump-play ====\n");
-    printf("GPIO HP pin41=0x%08x (TX=%u) SPK pin40=0x%08x (TX=%u)  [1=amp ON]\n",
-           hp, hp & 1u, spk, spk & 1u);
-    printf("Target speakers: both TX=1 | 0x0d=06 0x16=BB 0x30=10\n");
+    printf("GPIO C1/pad8=0x%08x (TX=%u)  [raw: 1=amp ON, 0=OFF]\n",
+           pad, pad & 1u);
+    printf("Target speakers: C1/pad8 TX=1 | 0x14=00 0x27=77 0xFB&2=jack\n");
     for (size_t i = 0; i < sizeof(regs); i++) {
         uint8_t v = i2c_read_reg(c, regs[i]);
         printf("I2C[0x%02x] = 0x%02x\n", regs[i], v);
@@ -490,9 +633,8 @@ static void ssp0_fill_dai_msg_ex(uint8_t m[216], uint8_t flags, uint16_t fmt,
     *(uint32_t *)(ssp + 48) = SOF_SSP_CLKS_CONTROL;
 }
 
-/* Defaults = sof-cml-es8336-dmic2ch-ssp0.tplg hw_config (the config Linux
- * actually runs on this board): MCLK 24 MHz, BCLK 2.4 MHz, 2 slots of 25 bits,
- * 24 valid bits. We had been sending 19.2 MHz / 1.536 MHz / 16 bits. */
+/* Live Linux topology: SSP MCLK 24 MHz, BCLK 2.4 MHz, 25-bit slots.
+ * The machine driver separately configures codec sysclk as 19.2 MHz. */
 #define SSP_GOLD_MCLK   24000000u
 #define SSP_GOLD_BCLK   2400000u
 #define SSP_GOLD_BITS   24u
@@ -542,45 +684,33 @@ static int ssp0_dai_config_hw_free(io_connect_t c) {
     return ssp0_dai_config_flags(c, 0x02, 0x4001, "HW_FREE");
 }
 
-/* Community-0 PADBAR (usually 0xA50, read from the community window). */
-static uint32_t c0_padbar(io_connect_t c) {
+/* Community-1 PADBAR (0x600 on this board; read from the community window). */
+static uint32_t c1_padbar(io_connect_t c) {
     uint32_t v = 0;
-    if (gpio_rd(c, GPIO_COMM0 | 0x0Cu, &v) == KERN_SUCCESS) {
+    if (gpio_rd(c, GPIO_COMM1 | 0x0Cu, &v) == KERN_SUCCESS) {
         v &= 0xFFFF;
         if (v >= 0x100u && v < 0x8000u) return v;
     }
-    return 0x0A50u;
+    return 0x0600u;
 }
 
-static uint32_t amp_padcfg(io_connect_t c, uint32_t pin) {
-    return GPIO_COMM0 | (c0_padbar(c) + pin * 16u);
+/* speakers-enable = community 1, pad 8 -> 0x600 + 8*16 = 0x680. */
+static uint32_t amp_padcfg(io_connect_t c) {
+    return GPIO_COMM1 | (c1_padbar(c) + 8u * 16u);
 }
 
-/* Drive GPP_B15/B16 TXSTATE. `padcfg_off` is either the encoded token
- * GPIO_SPK/HP_PADCFG or an already-resolved MMIO offset. */
-static kern_return_t gpio_set_level(io_connect_t c, uint32_t padcfg_off, int high) {
-    uint32_t local = padcfg_off & 0xFFFFu;
-    uint32_t pin;
-    if (local == 0x0CD0u || local == 40u) pin = 40;
-    else if (local == 0x0CE0u || local == 41u) pin = 41;
-    else {
-        uint32_t spk = amp_padcfg(c, 40) & 0xFFFFu;
-        uint32_t hp  = amp_padcfg(c, 41) & 0xFFFFu;
-        if (local == spk) pin = 40;
-        else if (local == hp) pin = 41;
-        else return KERN_INVALID_ARGUMENT;
-    }
-    uint32_t off = amp_padcfg(c, pin);
-
+/* Drive the speaker line: raw TXSTATE 1 during playback, 0 at idle. */
+static kern_return_t gpio_set_amp(io_connect_t c, int on) {
+    uint32_t off = amp_padcfg(c);
     uint32_t old = 0;
     kern_return_t kr = gpio_rd(c, off, &old);
     if (kr != KERN_SUCCESS) return kr;
-    uint32_t val = (old & ~1u) | (high ? 1u : 0u);
+    uint32_t val = (old & ~1u) | (on ? 1u : 0u);
     kr = gpio_wr(c, off, val);
     uint32_t verify = 0;
     gpio_rd(c, off, &verify);
-    printf("  C0 pin=%u @0x%x 0x%08x -> wr 0x%08x rd 0x%08x (TX=%d TXDIS=%u) kr=0x%x\n",
-           pin, off & 0xFFFF, old, val, verify, high ? 1 : 0, (verify >> 8) & 1u, kr);
+    printf("  C1 pad8 @0x%x 0x%08x -> wr 0x%08x rd 0x%08x (amp=%s) kr=0x%x\n",
+           off & 0xFFFF, old, val, verify, on ? "ON" : "OFF", kr);
     return kr;
 }
 
@@ -618,32 +748,30 @@ static void usage(const char *argv0) {
         "  fwphys                         Print FW staging physical address\n"
         "  phys                           Print play/cap/flags/fw phys addrs\n"
         "  mapcap                         Map capture DMA (IOConnectMapMemory type 1)\n"
-        "  mute-speakers                  GPIO HP+SPK LOW + DAC soft-mute (night default)\n"
-        "  unmute-speakers                GPP_B15+B16 TX=1 (amps ON), DAC unmute\n"
-        "  unmute-headphones              GPP_B15+B16 TX=0 (amps OFF), DAC unmute\n"
+        "  mute-speakers                  C1/pad8 TX=0 (amp OFF) + DAC mute (night default)\n"
+        "  unmute-speakers                DAC unmute -> 70 ms -> C1/pad8 TX=1 (amp ON)\n"
+        "  unmute-headphones              C1/pad8 TX=0 (amp OFF) + DAC unmute\n"
         "  wait-fsr [timeout_ms]          Poll BAR4 ROM_STATUS until FSR=5 (default 15000)\n"
-        "  es8336-config                  One-shot I2C configure; amps+DAC stay muted\n"
+        "  es8326-config                  Full ES8326 init (19.2 MHz/48k); DAC+amp muted\n"
         "  rdbar0 <8|16|32> <off>         Read BAR0\n"
         "  wrbar0 <8|16|32> <off> <val>   Write BAR0\n"
         "  rdbar4 <8|16|32|64> <off>      Read BAR4 (64 -> lo hi)\n"
         "  wrbar4 <8|16|32|64> <off> <val> [hi]\n"
-        "  rdgpio <off>                   Read GPIO Community0 dword\n"
-        "  wrgpio <off> <val>             Write GPIO Community0 dword\n"
-        "  rdi2c <reg>                    Read ES8336 register\n"
-        "  wri2c <reg> <val>              Write ES8336 register\n"
+        "  rdgpio <off>                   Read GPIO dword (community in high 16 bits)\n"
+        "  wrgpio <off> <val>             Write GPIO dword (community in high 16 bits)\n"
+        "  rdi2c <reg>                    Read ES8326 register\n"
+        "  wri2c <reg> <val>              Write ES8326 register\n"
         "  start|stop|pos                 Playback helpers\n"
         "  ssp0-dai-config                SSP0 DAI_CONFIG HW_PARAMS (start clocks)\n"
         "  ssp0-dai-free                  SSP0 DAI_CONFIG HW_FREE (stop clocks)\n"
         "  ssp0-reclock                   HW_FREE then HW_PARAMS (force clock restart)\n"
-        "  codec-master-tone [freq] [sec] Codec I2S master 0x86 + SSP CBP_CFP + tone\n"
-        "  bclk-inv-tone [freq] [sec]     SERDATA1 BCLK_INV + slave SSP + tone\n"
         "  playtone [freq] [sec] [spk|hp] Sine + SSP0 clocks + amp route\n"
         "                                 optional spk|hp forces route (ignore jack)\n"
-        "  alltone [sec]                  Brute-force clock/codec variants (LISTEN)\n"
-        "  dump-play                      I2C key regs + GPIO pads (vs Linux gold)\n"
-        "  calibrate [spk|hp]             Diff live regs vs Linux FULL3 targets\n"
+        "  dump-play                      I2C key regs + speaker GPIO pad\n"
+        "  peek-play                      Inspect playback DMA sample peak\n"
+        "  peek-capture [seconds]         Inspect capture channel levels (no recording)\n"
+        "  calibrate [spk|hp]             Diff live regs vs ES8326 playback targets\n"
         "  probe-dma [sec]                HDA streams + LPIB rate vs 192000 B/s\n"
-        "  hot-csm                        Reset CSM while Playing (needs clocks)\n"
         "  capstart|capstop|cappos        Capture helpers (maps DMA if missing)\n",
         argv0);
 }
@@ -658,7 +786,7 @@ static int parse_u64(const char *s, uint64_t *out) {
 }
 
 static int open_client(io_service_t *outSvc, io_connect_t *outConn) {
-    CFMutableDictionaryRef matching = IOServiceMatching("MateBookAudioDevice");
+    CFMutableDictionaryRef matching = IOServiceMatching("MedionAudioDevice");
     io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, matching);
     if (!service) return -1;
     io_connect_t connect = 0;
@@ -714,16 +842,16 @@ int main(int argc, char **argv) {
         io_connect_t connect = 0;
         int oc = open_client(&service, &connect);
         if (oc == -1) {
-            printf("[-] MateBookAudioDevice NOT in IORegistry\n");
+            printf("[-] MedionAudioDevice NOT in IORegistry\n");
             return 1;
         }
         if (oc == -2) {
-            printf("[+] MateBookAudioDevice present but UserClient open failed\n");
+            printf("[+] MedionAudioDevice present but UserClient open failed\n");
             dump_device_props(service);
             IOObjectRelease(service);
             return 1;
         }
-        printf("[+] MateBookAudioDevice + UserClient open (svc=0x%x conn=0x%x)\n",
+        printf("[+] MedionAudioDevice + UserClient open (svc=0x%x conn=0x%x)\n",
                service, connect);
         dump_device_props(service);
         IOServiceClose(connect);
@@ -735,7 +863,7 @@ int main(int argc, char **argv) {
     io_connect_t connect = 0;
     int oc = open_client(&service, &connect);
     if (oc != 0) {
-        printf("[-] Cannot open MateBookAudioDevice UserClient (code %d)\n", oc);
+        printf("[-] Cannot open MedionAudioDevice UserClient (code %d)\n", oc);
         dump_hdas_props();
         return 1;
     }
@@ -945,12 +1073,12 @@ int main(int argc, char **argv) {
                rom, ex, rom & 0xFFFFFF, entered ? 1 : 0, cse_halt, waited, CAP_CHANNELS);
         if (!entered) {
             fprintf(stderr,
-                    "[-] wait-fsr failed — run: matebook_ctl resetdsp && matebook_ctl init\n"
+                    "[-] wait-fsr failed — run: medion_ctl resetdsp && medion_ctl init\n"
                     "    (or sof_boot / loadfw --boot) after reboot with intel-signed FW\n");
         }
         rc = entered ? 0 : 1;
     } else if (strcmp(cmd, "calibrate") == 0) {
-        /* Diff live codec+GPIO against Linux FULL3 playing targets. */
+        /* Diff live codec + speaker GPIO against the ES8326 playback targets. */
         int want_spk = 1;
         if (argc >= 3) {
             if (strcmp(argv[2], "hp") == 0 || strcmp(argv[2], "headphones") == 0)
@@ -958,142 +1086,92 @@ int main(int argc, char **argv) {
             else if (strcmp(argv[2], "spk") == 0 || strcmp(argv[2], "speakers") == 0)
                 want_spk = 1;
         }
-        struct { uint8_t reg; uint8_t spk; uint8_t hp; const char *name; } gold[] = {
-            { 0x01, 0x77, 0x77, "CLKSW" },
-            { 0x06, 0x11, 0x11, "DACDIV1" },
-            { 0x07, 0x90, 0x90, "DACDIV2" },
-            { 0x09, 0x04, 0x04, "SERDATA1" },
-            { 0x0a, 0x40, 0x40, "SERDATA_ADC" },
-            { 0x0b, 0x00, 0x00, "SERDATA_DAC" },
-            { 0x0d, 0x06, 0x06, "SYS_PDN" },
-            { 0x14, 0x88, 0x88, "HPMIX_SWITCH" },
-            { 0x16, 0xbb, 0xbb, "HPMIX_VOL" }, /* 0 dB both — HP attenuate poisoned SPK */
-            { 0x17, 0x66, 0x66, "CPHP_OUTEN" },
-            { 0x18, 0x00, 0x00, "CPHP_ICAL" },
-            { 0x2f, 0x00, 0x00, "DAC_PDN" },
-            { 0x30, 0x10, 0x10, "DAC_SET1" },
-            { 0x33, 0x00, 0x00, "DAC_VOLL" },
-            { 0x34, 0x00, 0x00, "DAC_VOLR" },
+        struct { uint8_t reg; uint8_t exp; const char *name; } gold[] = {
+            { ES8326_DAC_MUTE,       0x00, "DAC_MUTE" },
+            { ES8326_HP_CAL,         ES8326_HP_ON, "HP_CAL" },
+            { ES8326_HP_DRIVER,      0xa1, "HP_DRIVER" },
+            { ES8326_HP_DRIVER_REF,  0x33, "HP_DRIVER_REF" },
+            { ES8326_CLK_INV,        0x00, "CLK_INV" },
+            { ES8326_CLK_MUX,        0x6d, "CLK_MUX" },
+            { ES8326_CLK_DIV1,       0xE9, "CLK_DIV1" },
+            { ES8326_CLK_DIV2,       0x04, "CLK_DIV2" },
+            { ES8326_CLK_DLL,        0x0F, "CLK_DLL" },
+            { ES8326_CLK_ADC_SEL,    0x4A, "CLK_ADC_SEL" },
+            { ES8326_CLK_DAC_SEL,    0x0A, "CLK_DAC_SEL" },
+            { ES8326_CLK_ADC_OSR,    0x1F, "CLK_ADC_OSR" },
+            { ES8326_CLK_DAC_OSR,    0x1F, "CLK_DAC_OSR" },
+            { ES8326_FMT,            ES8326_S24_LE, "FMT" },
         };
-        uint32_t hp = 0, spk = 0;
-        gpio_rd(connect, amp_padcfg(connect, 41), &hp);
-        gpio_rd(connect, amp_padcfg(connect, 40), &spk);
-        printf("==== calibrate %s (Linux FULL3 + macOS SPK loudness) ====\n",
+        uint32_t pad = 0;
+        gpio_rd(connect, amp_padcfg(connect), &pad);
+        printf("==== calibrate %s (ES8326 19.2 MHz / 48 kHz) ====\n",
                want_spk ? "SPEAKERS" : "HEADPHONES");
-        printf("GPIO pin40 TX=%u pin41 TX=%u  expect %s\n",
-               spk & 1u, hp & 1u, want_spk ? "both 1" : "both 0");
+        printf("GPIO C1/pad8 TX=%u  expect %s (raw: 1=amp ON)\n",
+               pad & 1u, want_spk ? "1 (amp ON)" : "0 (amp OFF)");
         int mismatches = 0;
         if (want_spk) {
-            if ((spk & 1u) != 1 || (hp & 1u) != 1) { printf("  GPIO MISMATCH\n"); mismatches++; }
+            if ((pad & 1u) != 1) { printf("  GPIO MISMATCH\n"); mismatches++; }
         } else {
-            if ((spk & 1u) != 0 || (hp & 1u) != 0) { printf("  GPIO MISMATCH\n"); mismatches++; }
+            if ((pad & 1u) != 0) { printf("  GPIO MISMATCH\n"); mismatches++; }
         }
         for (size_t i = 0; i < sizeof(gold)/sizeof(gold[0]); i++) {
             uint8_t live = i2c_read_reg(connect, gold[i].reg);
-            uint8_t exp = want_spk ? gold[i].spk : gold[i].hp;
-            int ok = (live == exp);
+            int ok = (live == gold[i].exp);
             if (!ok) mismatches++;
             printf("  %s I2C[0x%02x] live=0x%02x expect=0x%02x %s\n",
-                   gold[i].name, gold[i].reg, live, exp, ok ? "OK" : "DIFF");
+                   gold[i].name, gold[i].reg, live, gold[i].exp, ok ? "OK" : "DIFF");
         }
         printf("CALIBRATE_%s mismatches=%d\n", want_spk ? "SPK" : "HP", mismatches);
         rc = mismatches ? 1 : 0;
     } else if (strcmp(cmd, "mute-speakers") == 0) {
-        /* sof_es8336 active-low: physical HIGH = deassert/OFF. Then DAC soft-mute. */
-        printf("[*] mute-speakers: C0 GPP_B15+B16 TX=0 (amps OFF), DAC soft-mute\n");
-        kern_return_t k1 = gpio_set_level(connect, GPIO_SPK_PADCFG, 0);
-        kern_return_t k2 = gpio_set_level(connect, GPIO_HP_PADCFG, 0);
-        int dac = i2c_write_reg(connect, ES8316_DAC_SET1, 0x20);
-        uint32_t hp = 0, spk = 0;
-        gpio_rd(connect, amp_padcfg(connect, 41), &hp);
-        gpio_rd(connect, amp_padcfg(connect, 40), &spk);
-        /* Locked pads stay 0x44000300 — treat write success + DAC as OK. */
-        rc = (k1 == KERN_SUCCESS && k2 == KERN_SUCCESS && dac == 0) ? 0 : 1;
-        printf("MUTE_OK=%d CAP_CHANNELS=%d GPIO_HP=0x%08x GPIO_SPK=0x%08x DAC_MUTE=1\n",
-               rc == 0 ? 1 : 0, CAP_CHANNELS, hp, spk);
+        printf("[*] mute-speakers: C1/pad8 TX=0 (amp OFF), DAC mute\n");
+        kern_return_t k = gpio_set_amp(connect, 0);
+        apply_codec_mute(connect);
+        uint32_t pad = 0;
+        gpio_rd(connect, amp_padcfg(connect), &pad);
+        rc = (k == KERN_SUCCESS) ? 0 : 1;
+        printf("MUTE_OK=%d CAP_CHANNELS=%d GPIO_PAD=0x%08x DAC_MUTE=0x%02x\n",
+               rc == 0 ? 1 : 0, CAP_CHANNELS, pad,
+               i2c_read_reg(connect, ES8326_DAC_MUTE));
         printf("[%c] mute-speakers\n", rc == 0 ? '+' : '-');
     } else if (strcmp(cmd, "unmute-speakers") == 0) {
-        printf("[*] unmute-speakers: C0 GPP_B15+B16 TX=1 (amps ON), Linux play codec\n");
-        kern_return_t k1 = gpio_set_level(connect, GPIO_SPK_PADCFG, 1);
-        kern_return_t k2 = gpio_set_level(connect, GPIO_HP_PADCFG, 1);
-        apply_linux_play_codec(connect);
-        usleep(70000); /* 70ms anti-pop like sof_es8336 pcm_pop_work */
-        gpio_set_level(connect, GPIO_SPK_PADCFG, 1);
-        gpio_set_level(connect, GPIO_HP_PADCFG, 1);
-        uint32_t hp = 0, spk = 0;
-        gpio_rd(connect, amp_padcfg(connect, 41), &hp);
-        gpio_rd(connect, amp_padcfg(connect, 40), &spk);
-        int dac = i2c_read_reg(connect, ES8316_DAC_SET1);
-        rc = (k1 == KERN_SUCCESS && k2 == KERN_SUCCESS && dac == 0x10) ? 0 : 1;
-        printf("UNMUTE_OK=%d GPIO_HP=0x%08x GPIO_SPK=0x%08x DAC_SET1=0x%02x (pads may be TX-locked)\n",
-               rc == 0 ? 1 : 0, hp, spk, dac);
+        printf("[*] unmute-speakers: DAC unmute -> 70 ms -> C1/pad8 TX=1 (amp ON)\n");
+        apply_codec_play(connect);
+        usleep(70000);
+        kern_return_t k = gpio_set_amp(connect, 1);
+        uint32_t pad = 0;
+        gpio_rd(connect, amp_padcfg(connect), &pad);
+        rc = (k == KERN_SUCCESS) ? 0 : 1;
+        printf("UNMUTE_OK=%d GPIO_PAD=0x%08x DAC_MUTE=0x%02x HP_CAL=0x%02x\n",
+               rc == 0 ? 1 : 0, pad,
+               i2c_read_reg(connect, ES8326_DAC_MUTE),
+               i2c_read_reg(connect, ES8326_HP_CAL));
         printf("[%c] unmute-speakers\n", rc == 0 ? '+' : '-');
     } else if (strcmp(cmd, "unmute-headphones") == 0) {
-        printf("[*] unmute-headphones: C0 GPP_B15+B16 TX=0, same 0 dB codec as speakers\n");
-        kern_return_t k1 = gpio_set_level(connect, GPIO_HP_PADCFG, 0);
-        kern_return_t k2 = gpio_set_level(connect, GPIO_SPK_PADCFG, 0);
-        apply_linux_play_codec(connect);
-        usleep(70000);
-        gpio_set_level(connect, GPIO_HP_PADCFG, 0);
-        gpio_set_level(connect, GPIO_SPK_PADCFG, 0);
-        uint32_t hp = 0, spk = 0;
-        gpio_rd(connect, amp_padcfg(connect, 41), &hp);
-        gpio_rd(connect, amp_padcfg(connect, 40), &spk);
-        int dac = i2c_read_reg(connect, ES8316_DAC_SET1);
-        rc = (k1 == KERN_SUCCESS && k2 == KERN_SUCCESS && dac == 0x10) ? 0 : 1;
-        printf("UNMUTE_OK=%d GPIO_HP=0x%08x GPIO_SPK=0x%08x DAC_SET1=0x%02x (pads may be TX-locked)\n",
-               rc == 0 ? 1 : 0, hp, spk, dac);
+        printf("[*] unmute-headphones: C1/pad8 TX=0 (amp OFF), DAC unmute\n");
+        kern_return_t k = gpio_set_amp(connect, 0);
+        apply_codec_play(connect);
+        uint32_t pad = 0;
+        gpio_rd(connect, amp_padcfg(connect), &pad);
+        rc = (k == KERN_SUCCESS) ? 0 : 1;
+        printf("UNMUTE_OK=%d GPIO_PAD=0x%08x DAC_MUTE=0x%02x HP_CAL=0x%02x\n",
+               rc == 0 ? 1 : 0, pad,
+               i2c_read_reg(connect, ES8326_DAC_MUTE),
+               i2c_read_reg(connect, ES8326_HP_CAL));
         printf("[%c] unmute-headphones\n", rc == 0 ? '+' : '-');
-    } else if (strcmp(cmd, "es8336-config") == 0) {
-        /* One-shot I2C sequence mirroring ES8336Codec::configure; ends muted */
-        printf("[*] es8336-config: one-shot I2C (Linux-aligned clocks/SERDATA; DAC soft-mute)\n");
-        int fails = 0;
-        fails += i2c_write_reg(connect, ES8316_RESET, 0x3F) < 0;
-        usleep(10000);
-        fails += i2c_write_reg(connect, ES8316_RESET, ES8316_RESET_CSM_ON) < 0;
-        usleep(35000);
-        fails += i2c_write_reg(connect, ES8316_SYS_VMIDSEL, 0xFF) < 0;
-        fails += i2c_write_reg(connect, ES8316_CLKMGR_ADCOSR, 0x32) < 0;
-        fails += i2c_write_reg(connect, ES8316_CLKMGR_CLKSW, 0x7F) < 0;
-        fails += i2c_write_reg(connect, ES8316_CLKMGR_CLKSEL, 0x00) < 0;
-        fails += i2c_write_reg(connect, ES8316_CLKMGR_ADCDIV1, 0x11) < 0;
-        fails += i2c_write_reg(connect, ES8316_CLKMGR_ADCDIV2, 0x90) < 0;
-        fails += i2c_write_reg(connect, ES8316_CLKMGR_DACDIV1, 0x11) < 0;
-        fails += i2c_write_reg(connect, ES8316_CLKMGR_DACDIV2, 0x90) < 0;
-        fails += i2c_write_reg(connect, ES8316_CLKMGR_CPDIV, 0x00) < 0;
-        /* Linux live SERDATA */
-        fails += i2c_write_reg(connect, ES8316_SERDATA1, 0x04) < 0;
-        fails += i2c_write_reg(connect, ES8316_SERDATA_ADC, 0x40) < 0;
-        fails += i2c_write_reg(connect, ES8316_SERDATA_DAC, 0x00) < 0;
-        fails += i2c_write_reg(connect, ES8316_SYS_PDN, 0x00) < 0;
-        fails += i2c_write_reg(connect, ES8316_SYS_LP1, 0x00) < 0;
-        fails += i2c_write_reg(connect, ES8316_SYS_LP2, 0x00) < 0;
-        fails += i2c_write_reg(connect, ES8316_SYS_REF, 0x00) < 0;
-        fails += i2c_write_reg(connect, ES8316_DAC_PDN, 0x00) < 0;
-        fails += i2c_write_reg(connect, ES8316_DAC_SET1, 0x20) < 0; /* soft-mute */
-        fails += i2c_write_reg(connect, ES8316_DAC_SET2, 0x00) < 0;
-        fails += i2c_write_reg(connect, ES8316_DAC_SET3, 0x00) < 0;
-        fails += i2c_write_reg(connect, ES8316_DAC_VOLL, 0x17) < 0;
-        fails += i2c_write_reg(connect, ES8316_DAC_VOLR, 0x17) < 0;
-        fails += i2c_write_reg(connect, ES8316_HPMIX_SEL, 0x00) < 0;
-        fails += i2c_write_reg(connect, ES8316_HPMIX_SWITCH, 0x88) < 0;
-        fails += i2c_write_reg(connect, ES8316_HPMIX_PDN, 0x00) < 0;
-        fails += i2c_write_reg(connect, ES8316_HPMIX_VOL, 0x00) < 0;
-        fails += i2c_write_reg(connect, ES8316_CPHP_PDN1, 0x00) < 0;
-        fails += i2c_write_reg(connect, ES8316_CPHP_PDN2, 0x00) < 0;
-        fails += i2c_write_reg(connect, ES8316_CPHP_LDOCTL, 0x00) < 0;
-        fails += i2c_write_reg(connect, ES8316_CPHP_ICAL_VOL, 0x00) < 0;
-        fails += i2c_write_reg(connect, ES8316_CPHP_OUTEN, 0x66) < 0;
-        fails += i2c_write_reg(connect, ES8316_GPIO_DEBOUNCE, 0x02) < 0;
-        /* DAC soft-mute only — pad TX is PADCFGLOCK sticky; don't require pad level. */
-        uint32_t hp = 0, spk = 0;
-        gpio_rd(connect, amp_padcfg(connect, 41), &hp);
-        gpio_rd(connect, amp_padcfg(connect, 40), &spk);
-        int mute_ok = (fails == 0);
-        printf("I2C_FAILS=%d MUTE_OK=%d CAP_CHANNELS=%d GPIO_HP=0x%08x GPIO_SPK=0x%08x\n",
-               fails, mute_ok ? 1 : 0, CAP_CHANNELS, hp, spk);
-        rc = mute_ok ? 0 : 1;
-        printf("[%c] es8336-config\n", rc == 0 ? '+' : '-');
+    } else if (strcmp(cmd, "es8326-config") == 0) {
+        printf("[*] es8326-config: full ES8326 init (19.2 MHz/48k); DAC muted, amp OFF\n");
+        apply_codec_init(connect);
+        apply_codec_mute(connect);
+        gpio_set_amp(connect, 0);
+        uint32_t pad = 0;
+        gpio_rd(connect, amp_padcfg(connect), &pad);
+        printf("I2C 0x14=%02x 0x27=%02x 0xFF=%02x GPIO_PAD=0x%08x\n",
+               i2c_read_reg(connect, ES8326_DAC_MUTE),
+               i2c_read_reg(connect, ES8326_HP_CAL),
+               i2c_read_reg(connect, ES8326_CHIP_VERSION), pad);
+        rc = 0;
+        printf("[+] es8326-config\n");
     } else if (strcmp(cmd, "start") == 0) {
         kr = IOConnectCallScalarMethod(connect, kSel_StartPlayback, NULL, 0, NULL, NULL);
         printf("start -> 0x%x\n", kr); rc = (kr == KERN_SUCCESS) ? 0 : 1;
@@ -1104,106 +1182,6 @@ int main(int argc, char **argv) {
     } else if (strcmp(cmd, "ssp0-reclock") == 0) {
         rc = ssp0_dai_config_hw_free(connect);
         if (rc == 0) rc = ssp0_dai_config_hw_params(connect);
-    } else if (strcmp(cmd, "codec-master-tone") == 0 || strcmp(cmd, "bclk-inv-tone") == 0) {
-        double freq = (argc >= 3) ? atof(argv[2]) : 440.0;
-        int hold_sec = (argc >= 4) ? atoi(argv[3]) : 5;
-        if (hold_sec < 1) hold_sec = 1;
-        if (hold_sec > 30) hold_sec = 30;
-        int master = (strcmp(cmd, "codec-master-tone") == 0);
-        mach_vm_address_t pbAddr = 0;
-        mach_vm_size_t pbSize = 0;
-        kr = IOConnectMapMemory64(connect, kMemPlayback, mach_task_self(), &pbAddr, &pbSize, kIOMapAnywhere);
-        if (kr != KERN_SUCCESS || pbAddr == 0) {
-            fprintf(stderr, "[-] map playback failed\n");
-            rc = 1;
-        } else {
-            int32_t *pcm = (int32_t *)(uintptr_t)pbAddr;
-            uint32_t nframes = (uint32_t)(pbSize / 8);   /* S32 stereo LJ24 */
-            if (nframes > 16384) nframes = 16384;
-            for (uint32_t f = 0; f < nframes; f++) {
-                int32_t s = (int32_t)(1500000000.0 * sin(2.0 * M_PI * freq * (double)f / 48000.0));
-                pcm[f * 2 + 0] = s; pcm[f * 2 + 1] = s;
-            }
-            IOConnectCallScalarMethod(connect, kSel_StopPlayback, NULL, 0, NULL, NULL);
-            usleep(50000);
-            /* Amp + analog path first */
-            gpio_set_level(connect, GPIO_HP_PADCFG, 1);
-            gpio_set_level(connect, GPIO_SPK_PADCFG, 1);
-            i2c_write_reg(connect, 0x01, 0x7F);
-            i2c_write_reg(connect, 0x0C, 0xFF);
-            i2c_write_reg(connect, 0x06, 0x01);
-            i2c_write_reg(connect, 0x07, 0x90);
-            if (master) {
-                i2c_write_reg(connect, 0x09, 0x86); /* MASTER | bclk_div=6 */
-                printf("[*] codec MASTER SERDATA1=0x86 + SSP fmt=0x0001 (CBP_CFP)\n");
-            } else {
-                i2c_write_reg(connect, 0x09, 0x26); /* BCLK_INV | bclk_div=6 */
-                printf("[*] codec SLAVE BCLK_INV SERDATA1=0x26 + SSP fmt=0x4001\n");
-            }
-            i2c_write_reg(connect, 0x0A, 0x0C);
-            i2c_write_reg(connect, 0x0B, 0x0C);
-            i2c_write_reg(connect, 0x14, 0x88);
-            i2c_write_reg(connect, 0x16, 0x00);
-            i2c_write_reg(connect, 0x17, 0x66);
-            i2c_write_reg(connect, 0x18, 0x00);
-            i2c_write_reg(connect, 0x2F, 0x00);
-            i2c_write_reg(connect, 0x30, 0x00);
-            kr = IOConnectCallScalarMethod(connect, kSel_StartPlayback, NULL, 0, NULL, NULL);
-            if (kr != KERN_SUCCESS) {
-                printf("[-] StartPlayback 0x%x\n", kr);
-                rc = 1;
-            } else {
-                uint16_t fmt = master ? 0x0001 : 0x4001;
-                (void)ssp0_dai_config_flags(connect, 0x02, fmt, "HW_FREE");
-                rc = ssp0_dai_config_flags(connect, 0x01, fmt, "HW_PARAMS");
-                /* Hot CSM while clocks should run */
-                i2c_write_reg(connect, 0x00, 0x3F);
-                usleep(10000);
-                i2c_write_reg(connect, 0x00, 0x80);
-                usleep(35000);
-                i2c_write_reg(connect, 0x01, 0x7F);
-                i2c_write_reg(connect, 0x09, master ? 0x86 : 0x26);
-                i2c_write_reg(connect, 0x0C, 0xFF);
-                i2c_write_reg(connect, 0x14, 0x88);
-                i2c_write_reg(connect, 0x16, 0x00);
-                i2c_write_reg(connect, 0x17, 0x66);
-                i2c_write_reg(connect, 0x18, 0x00);
-                i2c_write_reg(connect, 0x30, 0x00);
-                printf("[+] %s %.0f Hz %ds — LISTEN headphones now (SERDATA1=0x%02x)\n",
-                       cmd, freq, hold_sec, i2c_read_reg(connect, 0x09));
-                int steps = hold_sec * 5;
-                for (int t = 0; t < steps; t++) {
-                    for (uint32_t f = 0; f < nframes; f++) {
-                        int32_t s = (int32_t)(1500000000.0 * sin(2.0 * M_PI * freq * (double)f / 48000.0));
-                        pcm[f * 2 + 0] = s; pcm[f * 2 + 1] = s;
-                    }
-                    if ((t % 5) == 0) {
-                        uint64_t pos = 0; uint32_t oc = 1;
-                        IOConnectCallScalarMethod(connect, kSel_GetPosition, NULL, 0, &pos, &oc);
-                        printf("    t=%ds pos=%llu\n", t / 5, (unsigned long long)pos);
-                    }
-                    usleep(200000);
-                }
-                /* Restore slave default */
-                i2c_write_reg(connect, 0x09, 0x06);
-                IOConnectCallScalarMethod(connect, kSel_StopPlayback, NULL, 0, NULL, NULL);
-                (void)ssp0_dai_config_hw_params(connect);
-            }
-            IOConnectUnmapMemory64(connect, kMemPlayback, mach_task_self(), pbAddr);
-        }
-    } else if (strcmp(cmd, "hot-csm") == 0) {
-        /* Relock codec state machine while BCLK/FS should already be pulsing. */
-        printf("[*] hot-csm: RESET 0x3F -> CSM_ON 0x80 + restore analog\n");
-        i2c_write_reg(connect, 0x00, 0x3F);
-        usleep(10000);
-        i2c_write_reg(connect, 0x00, 0x80);
-        usleep(35000);
-        i2c_write_reg(connect, 0x01, 0x7F);
-        apply_linux_play_codec(connect);
-        printf("[+] hot-csm done (0x00=%02x 0x01=%02x 0x30=%02x)\n",
-               i2c_read_reg(connect, 0x00), i2c_read_reg(connect, 0x01),
-               i2c_read_reg(connect, 0x30));
-        rc = 0;
     } else if (strcmp(cmd, "playtone") == 0) {
         /* playtone [freq_hz] [hold_sec] [spk|hp]
          * Keep playback DMA mapped and rewrite sine every 200ms — CoreAudio/HAL
@@ -1254,32 +1232,28 @@ int main(int argc, char **argv) {
                 /* Re-assert clocks after TRIG_START (FW may gate until running). */
                 (void)ssp0_dai_config_hw_params(connect);
                 usleep(70000);
-                uint64_t flag = 0; uint32_t oc = 1; uint64_t in = 0x4F;
-                IOConnectCallScalarMethod(connect, kSel_I2CReadReg, &in, 1, &flag, &oc);
-                bool hp_in = (flag != 0) && ((flag & 0x04) == 0); /* flag==0 ⇒ not HP */
+                uint64_t sta = 0; uint32_t oc = 1; uint64_t in = ES8326_HPDET_STA;
+                IOConnectCallScalarMethod(connect, kSel_I2CReadReg, &in, 1, &sta, &oc);
+                bool hp_in = (sta != 0xff) && ((sta & ES8326_HPINSERT_FLAG) != 0);
                 if (force_route == 1) hp_in = false;
                 if (force_route == 2) hp_in = true;
+                apply_codec_play(connect);
                 if (hp_in) {
-                    gpio_set_level(connect, GPIO_HP_PADCFG, 0);  /* headphones: both amps off */
-                    gpio_set_level(connect, GPIO_SPK_PADCFG, 0);
+                    gpio_set_amp(connect, 0);            /* headphones: amp OFF */
                 } else {
-                    gpio_set_level(connect, GPIO_SPK_PADCFG, 1); /* speakers: both amps on */
-                    gpio_set_level(connect, GPIO_HP_PADCFG, 1);
+                    usleep(70000);                       /* anti-pop before amp ON */
+                    gpio_set_amp(connect, 1);            /* speakers: amp ON */
                 }
-                apply_linux_play_codec_route(connect, hp_in ? 0 : 1);
-
-                uint32_t hp = 0, spk = 0;
-                gpio_rd(connect, amp_padcfg(connect, 41), &hp);
-                gpio_rd(connect, amp_padcfg(connect, 40), &spk);
+                uint32_t pad = 0;
+                gpio_rd(connect, amp_padcfg(connect), &pad);
                 printf("[+] playtone %.1f Hz (kr=0x%x) — listen %ds, sine re-injected (anti-HAL-silence)\n",
                        freq, kr, hold_sec);
-                printf("    Route: %s | SPK pin40 TX=%u HP pin41 TX=%u (1=ON) FLAG=0x%02llx jack=%s%s\n",
+                printf("    Route: %s | C1/pad8 TX=%u (raw: 1=amp ON) HPDET_STA=0x%02llx jack=%s%s\n",
                        hp_in ? "HEADPHONES" : "INTERNAL SPEAKERS",
-                       spk & 1u, hp & 1u,
-                       (unsigned long long)(flag & 0xff),
-                       (flag != 0 && (flag & 0x04) == 0) ? "IN" : "OUT",
+                       pad & 1u, (unsigned long long)(sta & 0xff),
+                       hp_in ? "IN" : "OUT",
                        force_route ? " (forced)" : "");
-                printf("    Note: HAL/afplay also feeds DMA — prefer: afplay /tmp/matebook_tone750.wav\n");
+                printf("    Note: HAL/afplay also feeds DMA — prefer: afplay /tmp/medion_tone750.wav\n");
                 int steps = hold_sec * 5;
                 for (int t = 0; t < steps; t++) {
                     for (uint32_t f = 0; f < nframes; f++) {
@@ -1287,39 +1261,90 @@ int main(int argc, char **argv) {
                         pcm[f * 2 + 0] = s;
                         pcm[f * 2 + 1] = s;
                     }
-                    /* HAL can nudge I2C — keep analog powered every tick */
+                    /* HAL/CoreAudio can nudge the codec — re-assert playback. */
                     if ((t % 5) == 0) {
-                        i2c_write_reg(connect, 0x0d, 0x06);
-                        i2c_write_reg(connect, 0x15, 0x00);
-                        i2c_write_reg(connect, 0x17, 0x66);
-                        i2c_write_reg(connect, ES8316_DAC_SET1, 0x10);
+                        apply_codec_play(connect);
                         uint64_t pos = 0; uint32_t outCnt = 1;
                         IOConnectCallScalarMethod(connect, kSel_GetPosition, NULL, 0, &pos, &outCnt);
                         int peak = 0;
                         for (uint32_t i = 0; i < nframes * 2; i++) {
                             int v = pcm[i]; if (v < 0) v = -v; if (v > peak) peak = v;
                         }
-                        printf("    t=%ds pos=%llu peak=%d pdn=0x%02x\n", t / 5,
-                               (unsigned long long)pos, peak, i2c_read_reg(connect, 0x0d));
+                        printf("    t=%ds pos=%llu peak=%d dac_mute=0x%02x\n", t / 5,
+                               (unsigned long long)pos, peak,
+                               i2c_read_reg(connect, ES8326_DAC_MUTE));
                     }
                     usleep(200000);
                 }
-                /* Always leave speakers armed if jack out — HP playtone used to
-                 * leave TX=0 + (previously) quiet vols → speakers “dead”. */
+                /* Leave the speakers armed when the jack is out. */
                 {
-                    uint64_t flag2 = 0; uint32_t oc2 = 1; uint64_t in2 = 0x4F;
-                    IOConnectCallScalarMethod(connect, kSel_I2CReadReg, &in2, 1, &flag2, &oc2);
-                    bool jack_in = (flag2 != 0) && ((flag2 & 0x04) == 0);
+                    uint64_t sta2 = 0; uint32_t oc2 = 1; uint64_t in2 = ES8326_HPDET_STA;
+                    IOConnectCallScalarMethod(connect, kSel_I2CReadReg, &in2, 1, &sta2, &oc2);
+                    bool jack_in = (sta2 != 0xff) && ((sta2 & ES8326_HPINSERT_FLAG) != 0);
                     if (!jack_in) {
-                        gpio_set_level(connect, GPIO_SPK_PADCFG, 1);
-                        gpio_set_level(connect, GPIO_HP_PADCFG, 1);
-                        apply_linux_play_codec(connect);
-                        printf("[*] playtone exit: restored SPEAKERS (amps TX=1, 0 dB)\n");
+                        apply_codec_play(connect);
+                        usleep(70000);
+                        gpio_set_amp(connect, 1);
+                        printf("[*] playtone exit: restored SPEAKERS (amp ON, DAC unmuted)\n");
                     }
                 }
                 IOConnectUnmapMemory64(connect, kMemPlayback, mach_task_self(), pbAddr);
                 rc = (kr == KERN_SUCCESS) ? 0 : 1;
             }
+        }
+    } else if (strcmp(cmd, "peek-capture") == 0) {
+        int seconds = argc >= 3 ? atoi(argv[2]) : 10;
+        if (seconds < 1) seconds = 1;
+        if (seconds > 30) seconds = 30;
+        if (map_capture_if_needed(connect, &capMapAddr, &capMapSize) != 0) {
+            rc = 1;
+        } else {
+            volatile int32_t *s = (volatile int32_t *)(uintptr_t)capMapAddr;
+            size_t frames = (size_t)capMapSize / (2 * sizeof(*s));
+            if (frames > 16384) frames = 16384;
+            for (int t = 0; t < seconds; ++t) {
+                double sum[2] = {0, 0}, squares[2] = {0, 0};
+                int32_t lo[2] = {INT32_MAX, INT32_MAX}, hi[2] = {INT32_MIN, INT32_MIN};
+                for (size_t f = 0; f < frames; ++f) {
+                    for (int ch = 0; ch < 2; ++ch) {
+                        int32_t raw = s[2 * f + ch];
+                        if (raw < lo[ch]) lo[ch] = raw;
+                        if (raw > hi[ch]) hi[ch] = raw;
+                        double v = (double)raw / 2147483648.0;
+                        sum[ch] += v;
+                        squares[ch] += v * v;
+                    }
+                }
+                for (int ch = 0; ch < 2; ++ch) {
+                    double mean = sum[ch] / frames;
+                    double variance = squares[ch] / frames - mean * mean;
+                    if (variance < 0) variance = 0;
+                    printf("%s mean=%+.6f ac_rms=%.8f range=%d..%d  ", ch ? "R" : "L", mean, sqrt(variance), lo[ch], hi[ch]);
+                }
+                printf("t=%d\n", t + 1);
+                fflush(stdout);
+                sleep(1);
+            }
+        }
+    } else if (strcmp(cmd, "peek-play") == 0) {
+        mach_vm_address_t addr = 0;
+        mach_vm_size_t size = 0;
+        kr = IOConnectMapMemory64(connect, kMemPlayback, mach_task_self(), &addr, &size, kIOMapAnywhere);
+        if (kr != KERN_SUCCESS || !addr) {
+            printf("[-] playback map failed: 0x%x\n", kr);
+            rc = 1;
+        } else {
+            volatile int32_t *samples = (volatile int32_t *)(uintptr_t)addr;
+            uint64_t peak = 0, nonzero = 0;
+            for (mach_vm_size_t i = 0; i < size / sizeof(*samples); ++i) {
+                int64_t sample = samples[i];
+                uint64_t magnitude = sample < 0 ? (uint64_t)-sample : (uint64_t)sample;
+                if (magnitude > peak) peak = magnitude;
+                if (sample) ++nonzero;
+            }
+            printf("playback bytes=%llu nonzero=%llu peak=%llu\n",
+                   (unsigned long long)size, (unsigned long long)nonzero, (unsigned long long)peak);
+            IOConnectUnmapMemory64(connect, kMemPlayback, mach_task_self(), addr);
         }
     } else if (strcmp(cmd, "dump-play") == 0) {
         dump_play_snapshot(connect);
@@ -1329,104 +1354,6 @@ int main(int argc, char **argv) {
         if (w < 0.2) w = 0.2;
         probe_dma(connect, w);
         rc = 0;
-    } else if (strcmp(cmd, "alltone") == 0) {
-        /*
-         * Silence root-cause matrix — cycle configs. User listens each phase.
-         * Causes ruled in/out by ears:
-         *  A v19_slave   — SERDATA 0x06 (doc gold) + 19.2M
-         *  B v19_linux   — SERDATA dump bytes + 19.2M
-         *  C v19_master  — codec I2S master + SSP CBP_CFP
-         *  D v24_s16     — MCLK 24M BCLK 1.536M S16
-         *  E v24_tplg    — MCLK 24M BCLK 2.4M bits24 slot25 (DMA still S16 — probe only)
-         * Also TRIG_START host(0)+DAI(4)+sched(5).
-         */
-        int hold = (argc >= 3) ? atoi(argv[2]) : 6;
-        if (hold < 3) hold = 3;
-        if (hold > 15) hold = 15;
-        mach_vm_address_t pbAddr = 0;
-        mach_vm_size_t pbSize = 0;
-        kr = IOConnectMapMemory64(connect, kMemPlayback, mach_task_self(), &pbAddr, &pbSize, kIOMapAnywhere);
-        if (kr != KERN_SUCCESS || pbAddr == 0) {
-            fprintf(stderr, "[-] map playback failed\n");
-            rc = 1;
-        } else {
-            int32_t *pcm = (int32_t *)(uintptr_t)pbAddr;
-            uint32_t nframes = (uint32_t)(pbSize / 8);   /* S32 stereo LJ24 */
-            if (nframes > 16384) nframes = 16384;
-            double freq = 1000.0;
-
-            struct {
-                const char *name;
-                void (*codec)(io_connect_t);
-                uint16_t fmt;
-                uint32_t mclk, bclk, bits;
-                uint16_t slot;
-            } phases[] = {
-                /* A = exact tplg hw_config + exact Linux codec bytes. */
-                { "A_tplg_gold_s24", apply_codec_linux_s24_spk, 0x4001, 24000000, 2400000, 24, 25 },
-                { "B_s24_mclk19", apply_codec_linux_s24_spk, 0x4001, 19200000, 2400000, 24, 25 },
-                { "C_s16_mclk24", apply_codec_v19_slave, 0x4001, 24000000, 1536000, 16, 16 },
-                { "D_s16_mclk19_old", apply_codec_v19_slave, 0x4001, 19200000, 1536000, 16, 16 },
-                { "E_codec_master_s24", apply_codec_linux_s24_spk, 0x0001, 24000000, 2400000, 24, 25 },
-            };
-
-            printf("======== ALLTONE — %d phases × %ds — LISTEN EACH ========\n",
-                   (int)(sizeof(phases)/sizeof(phases[0])), hold);
-            printf("Amps: both TX stuck LOW (PADCFGLOCKTX=0x01fff9fb) = both ON (active-low).\n");
-            printf("SSP BAR4@0x10000 = 0xFFFFFFFF (SOF-managed; host cannot peek clocks).\n");
-            printf("DMA SD7 RUN was observed; silence ⇒ I2S/MCLK to codec or analog still dead.\n\n");
-
-            for (size_t pi = 0; pi < sizeof(phases)/sizeof(phases[0]); pi++) {
-                printf("\n******** PHASE %s — LISTEN %ds @ %.0f Hz ********\n",
-                       phases[pi].name, hold, freq);
-                IOConnectCallScalarMethod(connect, kSel_StopPlayback, NULL, 0, NULL, NULL);
-                usleep(80000);
-                (void)ssp0_dai_config_flags_ex(connect, 0x02, phases[pi].fmt,
-                    phases[pi].mclk, phases[pi].bclk, phases[pi].bits, phases[pi].slot, "HW_FREE");
-                phases[pi].codec(connect);
-                if (strcmp(phases[pi].name, "E_codec_master_s24") == 0)
-                    i2c_write_reg(connect, ES8316_SERDATA1, 0x84);
-                gpio_set_level(connect, GPIO_SPK_PADCFG, 1);
-                gpio_set_level(connect, GPIO_HP_PADCFG, 1); /* both amps on */
-                usleep(70000);
-                for (uint32_t f = 0; f < nframes; f++) {
-                    int32_t s = (int32_t)(1500000000.0 * sin(2.0 * M_PI * freq * (double)f / 48000.0));
-                    pcm[f * 2] = s; pcm[f * 2 + 1] = s;
-                }
-                kr = IOConnectCallScalarMethod(connect, kSel_StartPlayback, NULL, 0, NULL, NULL);
-                printf("    StartPlayback kr=0x%x\n", kr);
-                if (kr != KERN_SUCCESS) {
-                    printf("    [-] StartPlayback failed — skip TRIG (mailbox may be wedged)\n");
-                } else {
-                    (void)ssp0_dai_config_flags_ex(connect, 0x01, phases[pi].fmt,
-                        phases[pi].mclk, phases[pi].bclk, phases[pi].bits, phases[pi].slot, "HW_PARAMS");
-                    /* No extra TRIG_START here. StartPlayback already triggers the
-                     * host component, and TRIG on the DAI (4) or scheduler (5)
-                     * comp ids is rejected and wedges the IPC mailbox for every
-                     * later phase (replyErr 0xffffffff on all of B..E). */
-                }
-                phases[pi].codec(connect);
-                if (strcmp(phases[pi].name, "E_codec_master_s24") == 0)
-                    i2c_write_reg(connect, ES8316_SERDATA1, 0x84);
-                printf("    I2C 0x01=%02x 0x06=%02x 0x07=%02x 0x09=%02x 0x0B=%02x 0x16=%02x 0x30=%02x\n",
-                       i2c_read_reg(connect, 0x01), i2c_read_reg(connect, 0x06),
-                       i2c_read_reg(connect, 0x07), i2c_read_reg(connect, 0x09),
-                       i2c_read_reg(connect, 0x0b), i2c_read_reg(connect, 0x16),
-                       i2c_read_reg(connect, 0x30));
-                for (int t = 0; t < hold; t++) {
-                    for (uint32_t f = 0; f < nframes; f++) {
-                        int32_t s = (int32_t)(1500000000.0 * sin(2.0 * M_PI * freq * (double)f / 48000.0));
-                        pcm[f * 2] = s; pcm[f * 2 + 1] = s;
-                    }
-                    printf("    ... %s t=%ds\n", phases[pi].name, t);
-                    sleep(1);
-                }
-            }
-            IOConnectCallScalarMethod(connect, kSel_StopPlayback, NULL, 0, NULL, NULL);
-            IOConnectUnmapMemory64(connect, kMemPlayback, mach_task_self(), pbAddr);
-            printf("\n======== ALLTONE DONE — which phase (A/B/C/D/E) had sound? ========\n");
-            rc = 0;
-        }
     } else if (strcmp(cmd, "stop") == 0) {
         kr = IOConnectCallScalarMethod(connect, kSel_StopPlayback, NULL, 0, NULL, NULL);
         printf("stop -> 0x%x\n", kr); rc = (kr == KERN_SUCCESS) ? 0 : 1;

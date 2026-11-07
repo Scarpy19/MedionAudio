@@ -1,5 +1,5 @@
-PLUGIN_NAME = MateBookAudioPlugin
-BUNDLE = MateBookAudio.driver
+PLUGIN_NAME = MedionAudioPlugin
+BUNDLE = MedionAudio.driver
 
 SDKROOT = /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
 
@@ -16,7 +16,7 @@ CFLAGS = \
 
 all: $(BUNDLE)
 
-$(BUNDLE): $(PLUGIN_NAME).c Info.plist
+$(BUNDLE): $(PLUGIN_NAME).c MedionDSP.h Info.plist
 	@echo "=== Building $(BUNDLE) ==="
 	mkdir -p $(BUNDLE)/Contents/MacOS
 	$(CC) $(CFLAGS) -bundle -o $(BUNDLE)/Contents/MacOS/$(PLUGIN_NAME) $(PLUGIN_NAME).c

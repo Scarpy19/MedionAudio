@@ -1,4 +1,4 @@
-KEXT_NAME = MateBookAudio
+KEXT_NAME = MedionAudio
 KEXT_BUNDLE = $(KEXT_NAME).kext
 
 SDKROOT = /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
@@ -50,7 +50,7 @@ LDFLAGS = \
 	-lcc_kext
 
 SRCDIR = $(KEXT_NAME)
-SRCS = $(SRCDIR)/MateBookAudioDevice.cpp $(SRCDIR)/ES8336Codec.cpp
+SRCS = $(SRCDIR)/MedionAudioDevice.cpp $(SRCDIR)/ES8326Codec.cpp
 OBJS = $(SRCS:.cpp=.o) $(SRCDIR)/sof_firmware_embed.o
 
 all: $(KEXT_BUNDLE)

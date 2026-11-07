@@ -1,5 +1,5 @@
-#ifndef MateBookAudioDevice_hpp
-#define MateBookAudioDevice_hpp
+#ifndef MedionAudioDevice_hpp
+#define MedionAudioDevice_hpp
 
 #include <IOKit/IOService.h>
 #include <IOKit/IOUserClient.h>
@@ -9,7 +9,7 @@
 #include <IOKit/pci/IOPCIDevice.h>
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <IOKit/pwr_mgt/RootDomain.h>
-#include "ES8336Codec.hpp"
+#include "ES8326Codec.hpp"
 
 // UserClient method selectors
 enum {
@@ -64,16 +64,16 @@ enum {
 #define kCmlSOF_BufferFrames    16384
 #define kCmlSOF_BytesPerFrame   8       // S32 stereo, 24-bit left-justified in container
 #define kCmlSOF_BufferSize      (kCmlSOF_BufferFrames * kCmlSOF_BytesPerFrame)
-/* Huawei quirk 0x1B0 / sof-cml-es8336-dmic2ch-ssp0: stereo DMIC (2ch S32) */
+/* Medion quirk 0x1B0 / sof-cml-es8336-dmic2ch-ssp0: stereo DMIC (2ch S32) */
 #define kCmlSOF_CapChannels     2
 #define kCmlSOF_CapBytesPerFrame (kCmlSOF_CapChannels * 4)  // 8
 #define kCmlSOF_CapBufferSize   (kCmlSOF_BufferFrames * kCmlSOF_CapBytesPerFrame)
 
-class MateBookAudioUserClient;
+class MedionAudioUserClient;
 
-class MateBookAudioDevice : public IOService {
-    OSDeclareDefaultStructors(MateBookAudioDevice)
-    friend class MateBookAudioUserClient;
+class MedionAudioDevice : public IOService {
+    OSDeclareDefaultStructors(MedionAudioDevice)
+    friend class MedionAudioUserClient;
 
 public:
     bool init(OSDictionary *dict = nullptr) override;
@@ -183,8 +183,8 @@ private:
     IOReturn mmioWrite(volatile UInt8 *base, IOMemoryMap *map, UInt32 width,
                        UInt32 offset, UInt64 value);
 
-    // Everest ES8336 codec instance
-    ES8336Codec codec;
+    // Everest ES8326 codec instance
+    ES8326Codec codec;
 
     IOBufferMemoryDescriptor *sharedDmaBuf;
     IOBufferMemoryDescriptor *sharedBdlBuf;
@@ -196,8 +196,8 @@ private:
     IOBufferMemoryDescriptor *fwStagingBuf;
 };
 
-class MateBookAudioUserClient : public IOUserClient {
-    OSDeclareDefaultStructors(MateBookAudioUserClient)
+class MedionAudioUserClient : public IOUserClient {
+    OSDeclareDefaultStructors(MedionAudioUserClient)
 public:
     bool initWithTask(task_t owningTask, void *securityToken, UInt32 type) override;
     bool start(IOService *provider) override;
@@ -209,42 +209,42 @@ public:
                            IOExternalMethodDispatch *dispatch, OSObject *target,
                            void *reference) override;
 private:
-    MateBookAudioDevice *device;
+    MedionAudioDevice *device;
     task_t clientTask;
-    static IOReturn sStart(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sStop(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sGetPos(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sUpdateSPIB(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sStartCap(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sStopCap(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sGetCapPos(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sTriggerInitDSP(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sReadBAR0_8(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sReadBAR0_16(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sReadBAR0_32(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sWriteBAR0_8(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sWriteBAR0_16(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sWriteBAR0_32(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sReadBAR4_8(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sReadBAR4_16(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sReadBAR4_32(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sWriteBAR4_8(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sWriteBAR4_16(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sWriteBAR4_32(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sReadBAR4_64(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sWriteBAR4_64(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sReadGPIO32(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sWriteGPIO32(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sI2CWriteReg(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sI2CReadReg(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sGetPhysicalAddrs(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sForceResetDSP(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sInitDSPFromStaging(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sGetFwPhys(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sSetFwStagingLen(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sSetCaptureSource(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
-    static IOReturn sSetTuning(MateBookAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sStart(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sStop(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sGetPos(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sUpdateSPIB(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sStartCap(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sStopCap(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sGetCapPos(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sTriggerInitDSP(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sReadBAR0_8(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sReadBAR0_16(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sReadBAR0_32(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sWriteBAR0_8(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sWriteBAR0_16(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sWriteBAR0_32(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sReadBAR4_8(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sReadBAR4_16(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sReadBAR4_32(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sWriteBAR4_8(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sWriteBAR4_16(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sWriteBAR4_32(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sReadBAR4_64(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sWriteBAR4_64(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sReadGPIO32(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sWriteGPIO32(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sI2CWriteReg(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sI2CReadReg(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sGetPhysicalAddrs(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sForceResetDSP(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sInitDSPFromStaging(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sGetFwPhys(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sSetFwStagingLen(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sSetCaptureSource(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
+    static IOReturn sSetTuning(MedionAudioUserClient *t, void *r, IOExternalMethodArguments *a);
     static const IOExternalMethodDispatch sMethods[kCmlSOF_MethodCount];
 };
 
-#endif /* MateBookAudioDevice_hpp */
+#endif /* MedionAudioDevice_hpp */

@@ -1,10 +1,16 @@
 .DS_Store
 *.o
 *.dSYM/
-kext/MateBookAudio.kext/
-plugin/MateBookAudio.driver/
-tools/matebook_ctl
+kext/MedionAudio.kext/
+plugin/MedionAudio.driver/
+tools/medion_ctl
 tools/measure/fr_measure
 tools/measure/dsptest
 tools/measure/*.csv
 tools/measure/*.raw
+# Never publish EFI contents, local reports, credentials or machine backups.
+EFI/
+logs/
+*.zip
+*.tar.gz
+SSH_AND_SUDO.md

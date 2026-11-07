@@ -1,16 +1,16 @@
-#include "MateBookAudioDevice.hpp"
+#include "MedionAudioDevice.hpp"
 #include <IOKit/IOLib.h>
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <IOKit/IODMACommand.h>
 #include <libkern/libkern.h>
 
 // Kext module entry
-extern "C" kern_return_t MateBookAudio_start(kmod_info_t *ki, void *data);
-extern "C" kern_return_t MateBookAudio_stop(kmod_info_t *ki, void *data);
+extern "C" kern_return_t MedionAudio_start(kmod_info_t *ki, void *data);
+extern "C" kern_return_t MedionAudio_stop(kmod_info_t *ki, void *data);
 __attribute__((visibility("default")))
-KMOD_EXPLICIT_DECL(com.hackintosh.MateBookAudio, "1.0.0", MateBookAudio_start, MateBookAudio_stop)
-kern_return_t MateBookAudio_start(kmod_info_t *ki, void *data) { return KERN_SUCCESS; }
-kern_return_t MateBookAudio_stop(kmod_info_t *ki, void *data) { return KERN_SUCCESS; }
+KMOD_EXPLICIT_DECL(com.hackintosh.MedionAudio, "1.0.0", MedionAudio_start, MedionAudio_stop)
+kern_return_t MedionAudio_start(kmod_info_t *ki, void *data) { return KERN_SUCCESS; }
+kern_return_t MedionAudio_stop(kmod_info_t *ki, void *data) { return KERN_SUCCESS; }
 
 // Embedded firmware
 extern "C" const unsigned char sof_fw_data[];
@@ -122,11 +122,9 @@ struct sof_ipc_pcm_params {
 #define SOF_DAI_CONFIG_FLAGS_NONE      0
 #define SOF_DAI_CONFIG_FLAGS_HW_PARAMS 0x01
 #define SOF_DAI_CONFIG_FLAGS_HW_FREE   0x02
-/* SSP0 link settings taken from the snd_soc_tplg_hw_config inside
- * sof-cml-es8336-dmic2ch-ssp0.tplg, i.e. what Linux actually runs on this
- * board. The topology carries no SOF_TKN_INTEL_SSP_* tokens, so clks_control,
- * quirks, mclk_id, frame_pulse_width and bclk_delay are all zero.
- * bclk = 48000 * 2 slots * 25 bits. */
+/* Linux Live topology specifies a 24 MHz SSP MCLK; the machine driver
+ * separately configures a 19.2 MHz codec sysclk. Preserve both values.
+ * bclk = 48000 * 2 slots * 25 bits = 2.4 MHz. */
 #define SSP_GOLD_MCLK       24000000U
 #define SSP_GOLD_BCLK       2400000U
 #define SSP_GOLD_BITS       24U
@@ -136,32 +134,25 @@ struct sof_ipc_pcm_params {
 /* SOF_DAI_FMT_I2S | SOF_DAI_FMT_CBC_CFC (codec is BCLK/FS slave). */
 #define SOF_DAI_FMT_I2S_CBC_CFC        0x4001
 
-// Pipeline 1: SSP0 playback (connected to Everest ES8336 codec)
+// Pipeline 1: SSP0 playback (Everest ES8326 codec)
 #define PIPE1_SCHED_ID   5
 #define PIPE1_HOST_ID    0
 #define PIPE1_BUF0_ID    2
 #define PIPE1_DAI_ID     4
 #define PIPE1_ID         1
 
-// Pipeline 3: DMIC capture (Comet Lake integrated digital mic array)
-/* PIPELINE 2: SSP0.IN capture (headset mic via ES8336 ADC) */
+// Pipeline 2: SSP0.IN capture (ES8326 ADC, MIC1 internal or MIC2 headset)
 #define PIPE2_SCHED_ID   20
 #define PIPE2_HOST_ID    21
 #define PIPE2_BUF0_ID    22
 #define PIPE2_DAI_ID     23
 #define PIPE2_ID         2
 
-#define PIPE3_SCHED_ID   30
-#define PIPE3_HOST_ID    35
-#define PIPE3_BUF0_ID    31
-#define PIPE3_DAI_ID     34
-#define PIPE3_ID         3
-
 struct HdaBdlEntry {
     UInt32 addrLow, addrHigh, size, ioc;
 } __attribute__((packed));
 
-OSDefineMetaClassAndStructors(MateBookAudioDevice, IOService)
+OSDefineMetaClassAndStructors(MedionAudioDevice, IOService)
 
 static inline UInt32 rd32(volatile UInt8 *b, UInt32 o) { return *(volatile UInt32*)(b + o); }
 static inline void   wr32(volatile UInt8 *b, UInt32 o, UInt32 v) { *(volatile UInt32*)(b + o) = v; }
@@ -202,7 +193,7 @@ static IOPMPowerState sPowerStates[2] = {
     { 1, kIOPMDeviceUsable | kIOPMPowerOn, kIOPMPowerOn, kIOPMPowerOn, 0, 0, 0, 0, 0, 0, 0, 0 }
 };
 
-bool MateBookAudioDevice::init(OSDictionary *d) {
+bool MedionAudioDevice::init(OSDictionary *d) {
     if (!IOService::init(d)) return false;
     pciDevice = nullptr; hdaBarMap = nullptr; dspBarMap = nullptr;
     hdaBase = nullptr; dspBase = nullptr;
@@ -213,7 +204,7 @@ bool MateBookAudioDevice::init(OSDictionary *d) {
     hwReady = false; isPlaying = false; isCapturing = false;
     codecConfigured = false;
     activePlaybackHost = PIPE1_HOST_ID;
-    captureSource = 0; capActiveHost = PIPE3_HOST_ID;
+    captureSource = 0; capActiveHost = PIPE2_HOST_ID;
     for (int i = 0; i < 8; i++) tuning[i] = 0;
     tuning[2] = 3;
     fwStagingLen = 0;
@@ -225,13 +216,13 @@ bool MateBookAudioDevice::init(OSDictionary *d) {
     return true;
 }
 
-void MateBookAudioDevice::free() {
+void MedionAudioDevice::free() {
     codec.free();
     IOService::free();
 }
 
-IOService *MateBookAudioDevice::probe(IOService *provider, SInt32 *score) {
-    IOLog("MateBookAudio: MateBookAudioDevice::probe called on provider %s\n",
+IOService *MedionAudioDevice::probe(IOService *provider, SInt32 *score) {
+    IOLog("MedionAudio: MedionAudioDevice::probe called on provider %s\n",
           provider ? provider->getName() : "null");
     if (!IOService::probe(provider, score)) return nullptr;
     IOPCIDevice *pci = OSDynamicCast(IOPCIDevice, provider);
@@ -243,26 +234,26 @@ IOService *MateBookAudioDevice::probe(IOService *provider, SInt32 *score) {
     if (devId && venId && devId->getLength() >= 2 && venId->getLength() >= 2) {
         UInt16 vid = *(const UInt16 *)venId->getBytesNoCopy();
         UInt16 did = *(const UInt16 *)devId->getBytesNoCopy();
-        IOLog("MateBookAudio: probe checking vendor=0x%04x device=0x%04x\n", vid, did);
+        IOLog("MedionAudio: probe checking vendor=0x%04x device=0x%04x\n", vid, did);
         if (vid != 0x8086 || did != 0x02c8) {
-            IOLog("MateBookAudio: probe vendor/device mismatch, rejecting\n");
+            IOLog("MedionAudio: probe vendor/device mismatch, rejecting\n");
             return nullptr;
         }
     }
-    pci->setProperty("MateBookAudioProbed", "yes");
-    IOLog("MateBookAudio: probe accepted, proceeding to start!\n");
+    pci->setProperty("MedionAudioProbed", "yes");
+    IOLog("MedionAudio: probe accepted, proceeding to start!\n");
     return this;
 }
 
-bool MateBookAudioDevice::start(IOService *provider) {
-    IOLog("MateBookAudio: MateBookAudioDevice::start called\n");
+bool MedionAudioDevice::start(IOService *provider) {
+    IOLog("MedionAudio: MedionAudioDevice::start called\n");
     if (!IOService::start(provider)) return false;
     pciDevice = OSDynamicCast(IOPCIDevice, provider);
     if (!pciDevice) return false;
     pciDevice->retain();
 
     if (!pciDevice->open(this)) {
-        IOLog("MateBookAudio: FAILED to open PCI device\n");
+        IOLog("MedionAudio: FAILED to open PCI device\n");
         setProperty("Status", "FAILED: PCI open");
         goto fail;
     }
@@ -296,52 +287,51 @@ bool MateBookAudioDevice::start(IOService *provider) {
     hdaBarMap = pciDevice->mapDeviceMemoryWithRegister(kIOPCIConfigBaseAddress0);
     dspBarMap = pciDevice->mapDeviceMemoryWithRegister(kIOPCIConfigBaseAddress4);
     if (!hdaBarMap || !dspBarMap) {
-        IOLog("MateBookAudio: FAILED to map BAR0 or BAR4\n");
+        IOLog("MedionAudio: FAILED to map BAR0 or BAR4\n");
         setProperty("Status", "FAILED: BAR map");
         goto fail;
     }
     hdaBase = (volatile UInt8 *)hdaBarMap->getVirtualAddress();
     dspBase = (volatile UInt8 *)dspBarMap->getVirtualAddress();
     if (!hdaBase || !dspBase) {
-        IOLog("MateBookAudio: FAILED null virtual address for BAR0/BAR4\n");
+        IOLog("MedionAudio: FAILED null virtual address for BAR0/BAR4\n");
         setProperty("Status", "FAILED: BAR virt");
         goto fail;
     }
-    IOLog("MateBookAudio: BAR0 (HDA) at %p, BAR4 (DSP) at %p (fast start, DSP deferred)\n",
+    IOLog("MedionAudio: BAR0 (HDA) at %p, BAR4 (DSP) at %p (fast start, DSP deferred)\n",
           hdaBase, dspBase);
 
-    pciDevice->setProperty("MateBookAudio_Step", "1_BAR_Mapped");
+    pciDevice->setProperty("MedionAudio_Step", "1_BAR_Mapped");
     setProperty("DSPStatus", "Deferred/UserClient");
-    pciDevice->setProperty("MateBookAudioDSPStatus", "Deferred/UserClient");
+    pciDevice->setProperty("MedionAudioDSPStatus", "Deferred/UserClient");
 
     // Soft-touch codec: map I2C/GPIO, optional configure, always force amps OFF
-    if (codec.init()) {
-        codec.configure();
-        setProperty("Codec", "ES8336 (ESSX8336)");
+    if (codec.init() && codec.configure()) {
+        setProperty("Codec", "ES8326 (ESSX8326)");
         setProperty("CodecStatus", codec.getStatus());
-        pciDevice->setProperty("MateBookAudioCodec", codec.getStatus());
-        IOLog("MateBookAudio: Codec soft-init on start: %s\n", codec.getStatus());
+        pciDevice->setProperty("MedionAudioCodec", codec.getStatus());
+        IOLog("MedionAudio: Codec soft-init on start: %s\n", codec.getStatus());
     } else {
         setProperty("Codec", "Init Deferred");
-        pciDevice->setProperty("MateBookAudioCodec", "Init Deferred");
-        IOLog("MateBookAudio: Codec soft-init deferred (Voodoo not ready)\n");
+        pciDevice->setProperty("MedionAudioCodec", "Init Deferred");
+        IOLog("MedionAudio: Codec soft-init deferred (Voodoo not ready)\n");
     }
     codec.silenceAmps();
 
     if (!allocateDmaBuffers()) {
-        IOLog("MateBookAudio: WARNING DMA buffer alloc failed at start (retry via initDSP)\n");
+        IOLog("MedionAudio: WARNING DMA buffer alloc failed at start (retry via initDSP)\n");
     }
 
     if (!allocateFwStaging()) {
-        IOLog("MateBookAudio: WARNING FW staging buffer alloc failed at start\n");
+        IOLog("MedionAudio: WARNING FW staging buffer alloc failed at start\n");
     } else {
-        IOLog("MateBookAudio: FW staging buffer ready (%u bytes, phys=0x%llx)\n",
+        IOLog("MedionAudio: FW staging buffer ready (%u bytes, phys=0x%llx)\n",
               kCmlSOF_FwStagingSize,
               (unsigned long long)fwStagingBuf->getPhysicalAddress());
     }
 
     /* Own work loop: getWorkLoop() would return the PCI parent's, which VoodooI2C's controller
-     * also uses. Gated calls doing I2C (startCapture -> setHeadsetMic) then deadlocked against
+     * also uses. Gated calls doing I2C (startCapture -> setCaptureMic) then deadlocked against
      * the jack thread's I2C reads and froze the trackpad on the same bus. */
     ownWorkLoop = IOWorkLoop::workLoop();
     if (ownWorkLoop) {
@@ -370,13 +360,13 @@ bool MateBookAudioDevice::start(IOService *provider) {
     }
 
     setProperty("Status", "BridgeReady");
-    if (pciDevice) pciDevice->setProperty("MateBookAudioStarted", "yes");
+    if (pciDevice) pciDevice->setProperty("MedionAudioStarted", "yes");
     registerService();
-    IOLog("MateBookAudio: Hardware bridge registered (initDSP via UserClient)\n");
+    IOLog("MedionAudio: Hardware bridge registered (initDSP via UserClient)\n");
     return true;
 
 fail:
-    IOLog("MateBookAudio: start() failed, cleaning up\n");
+    IOLog("MedionAudio: start() failed, cleaning up\n");
     if (hdaBarMap) { hdaBarMap->release(); hdaBarMap = nullptr; }
     if (dspBarMap) { dspBarMap->release(); dspBarMap = nullptr; }
     if (pciDevice) {
@@ -389,7 +379,7 @@ fail:
     return false;
 }
 
-void MateBookAudioDevice::stop(IOService *provider) {
+void MedionAudioDevice::stop(IOService *provider) {
     if (powerNotifier) {
         powerNotifier->remove();
         powerNotifier = nullptr;
@@ -421,7 +411,7 @@ void MateBookAudioDevice::stop(IOService *provider) {
 
 // ==================== DMA / MMIO helpers ====================
 
-bool MateBookAudioDevice::allocateDmaBuffers() {
+bool MedionAudioDevice::allocateDmaBuffers() {
     if (!sharedDmaBuf) {
         /* SOF pcm.buffer.phy_addr is uint32_t — keep DMA below 4 GiB. */
         sharedDmaBuf = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
@@ -450,7 +440,7 @@ bool MateBookAudioDevice::allocateDmaBuffers() {
     return (sharedDmaBuf && sharedBdlBuf && capDmaBuf && capBdlBuf);
 }
 
-bool MateBookAudioDevice::allocateFwStaging() {
+bool MedionAudioDevice::allocateFwStaging() {
     if (fwStagingBuf) return true;
     fwStagingBuf = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
         kIOMemoryPhysicallyContiguous | kIODirectionInOut, kCmlSOF_FwStagingSize,
@@ -463,16 +453,16 @@ bool MateBookAudioDevice::allocateFwStaging() {
     return true;
 }
 
-void MateBookAudioDevice::clearDspFailProps() {
+void MedionAudioDevice::clearDspFailProps() {
     removeProperty("DSPFail");
     removeProperty("ROMStatus");
     if (pciDevice) {
-        pciDevice->removeProperty("MateBookAudio_DSPFail");
-        pciDevice->removeProperty("MateBookAudio_ROMStatus");
+        pciDevice->removeProperty("MedionAudio_DSPFail");
+        pciDevice->removeProperty("MedionAudio_ROMStatus");
     }
 }
 
-void MateBookAudioDevice::powerGateDSP() {
+void MedionAudioDevice::powerGateDSP() {
     if (!dspBase) return;
     UInt32 a = rd32(dspBase, DSP_ADSPCS);
     a |= (UInt32)(ADSPCS_CRST(0xF) | ADSPCS_CSTALL(0xF));
@@ -480,10 +470,10 @@ void MateBookAudioDevice::powerGateDSP() {
     wr32(dspBase, DSP_ADSPCS, a);
     poll32(dspBase, DSP_ADSPCS, ADSPCS_CPA(0xF), 0, 50000);
     IODelay(1000);
-    IOLog("MateBookAudio: DSP power-gated (ADSPCS=0x%08x)\n", rd32(dspBase, DSP_ADSPCS));
+    IOLog("MedionAudio: DSP power-gated (ADSPCS=0x%08x)\n", rd32(dspBase, DSP_ADSPCS));
 }
 
-IOReturn MateBookAudioDevice::forceResetDSP() {
+IOReturn MedionAudioDevice::forceResetDSP() {
     codec.mute(true);
     codec.silenceAmps();
     isPlaying = false;
@@ -493,20 +483,20 @@ IOReturn MateBookAudioDevice::forceResetDSP() {
     clearDspFailProps();
     setProperty("DSPStatus", "Reset/Deferred");
     if (pciDevice)
-        pciDevice->setProperty("MateBookAudioDSPStatus", "Reset/Deferred");
-    IOLog("MateBookAudio: ForceResetDSP complete (hwReady=false)\n");
+        pciDevice->setProperty("MedionAudioDSPStatus", "Reset/Deferred");
+    IOLog("MedionAudio: ForceResetDSP complete (hwReady=false)\n");
     return kIOReturnSuccess;
 }
 
-IOReturn MateBookAudioDevice::setFwStagingLen(UInt32 len) {
+IOReturn MedionAudioDevice::setFwStagingLen(UInt32 len) {
     if (len > kCmlSOF_FwStagingSize) return kIOReturnBadArgument;
     if (!allocateFwStaging()) return kIOReturnNoMemory;
     fwStagingLen = len;
-    IOLog("MateBookAudio: fwStagingLen set to %u\n", len);
+    IOLog("MedionAudio: fwStagingLen set to %u\n", len);
     return kIOReturnSuccess;
 }
 
-IOReturn MateBookAudioDevice::getFwPhys(UInt64 *fwPhys) {
+IOReturn MedionAudioDevice::getFwPhys(UInt64 *fwPhys) {
     if (!fwPhys) return kIOReturnBadArgument;
     *fwPhys = 0;
     if (!allocateFwStaging()) return kIOReturnNoMemory;
@@ -514,7 +504,7 @@ IOReturn MateBookAudioDevice::getFwPhys(UInt64 *fwPhys) {
     return kIOReturnSuccess;
 }
 
-bool MateBookAudioDevice::stagingHasPayload(UInt32 *outOffset, UInt32 *outSize) const {
+bool MedionAudioDevice::stagingHasPayload(UInt32 *outOffset, UInt32 *outSize) const {
     if (!fwStagingBuf || !outOffset || !outSize) return false;
     const UInt8 *bytes = (const UInt8 *)fwStagingBuf->getBytesNoCopy();
     if (!bytes) return false;
@@ -543,7 +533,7 @@ bool MateBookAudioDevice::stagingHasPayload(UInt32 *outOffset, UInt32 *outSize) 
     return true;
 }
 
-IOReturn MateBookAudioDevice::mmioRead(volatile UInt8 *base, IOMemoryMap *map, UInt32 width,
+IOReturn MedionAudioDevice::mmioRead(volatile UInt8 *base, IOMemoryMap *map, UInt32 width,
                                        UInt32 offset, UInt64 *outVal) {
     if (!base || !map || !outVal) return kIOReturnNotReady;
     IOByteCount len = map->getLength();
@@ -564,7 +554,7 @@ IOReturn MateBookAudioDevice::mmioRead(volatile UInt8 *base, IOMemoryMap *map, U
     return kIOReturnSuccess;
 }
 
-IOReturn MateBookAudioDevice::mmioWrite(volatile UInt8 *base, IOMemoryMap *map, UInt32 width,
+IOReturn MedionAudioDevice::mmioWrite(volatile UInt8 *base, IOMemoryMap *map, UInt32 width,
                                         UInt32 offset, UInt64 value) {
     if (!base || !map) return kIOReturnNotReady;
     IOByteCount len = map->getLength();
@@ -584,20 +574,20 @@ IOReturn MateBookAudioDevice::mmioWrite(volatile UInt8 *base, IOMemoryMap *map, 
     return kIOReturnSuccess;
 }
 
-IOReturn MateBookAudioDevice::readBAR0(UInt32 width, UInt32 offset, UInt64 *outVal) {
+IOReturn MedionAudioDevice::readBAR0(UInt32 width, UInt32 offset, UInt64 *outVal) {
     return mmioRead(hdaBase, hdaBarMap, width, offset, outVal);
 }
-IOReturn MateBookAudioDevice::writeBAR0(UInt32 width, UInt32 offset, UInt64 value) {
+IOReturn MedionAudioDevice::writeBAR0(UInt32 width, UInt32 offset, UInt64 value) {
     return mmioWrite(hdaBase, hdaBarMap, width, offset, value);
 }
-IOReturn MateBookAudioDevice::readBAR4(UInt32 width, UInt32 offset, UInt64 *outVal) {
+IOReturn MedionAudioDevice::readBAR4(UInt32 width, UInt32 offset, UInt64 *outVal) {
     return mmioRead(dspBase, dspBarMap, width, offset, outVal);
 }
-IOReturn MateBookAudioDevice::writeBAR4(UInt32 width, UInt32 offset, UInt64 value) {
+IOReturn MedionAudioDevice::writeBAR4(UInt32 width, UInt32 offset, UInt64 value) {
     return mmioWrite(dspBase, dspBarMap, width, offset, value);
 }
 
-IOReturn MateBookAudioDevice::readGPIO32(UInt32 offset, UInt32 *outVal) {
+IOReturn MedionAudioDevice::readGPIO32(UInt32 offset, UInt32 *outVal) {
     if (!outVal) return kIOReturnBadArgument;
     /* High 16 bits = community index (0 or 1). Low 16 = MMIO offset. */
     UInt32 community = offset >> 16;
@@ -619,27 +609,20 @@ IOReturn MateBookAudioDevice::readGPIO32(UInt32 offset, UInt32 *outVal) {
     return kIOReturnSuccess;
 }
 
-IOReturn MateBookAudioDevice::writeGPIO32(UInt32 offset, UInt32 value) {
+IOReturn MedionAudioDevice::writeGPIO32(UInt32 offset, UInt32 value) {
     UInt32 community = offset >> 16;
     UInt32 off = offset & 0xFFFF;
     volatile UInt8 *base = nullptr;
     IOByteCount len = 0;
     if (community == 0) {
-        base = codec.getGpioBase();
-        len = codec.getGpioLength();
-        /* Amp enables are C0 pads 40/41. On this board PADBAR=0x600 so they
-         * land at 0x880/0x890 (NOT the RF pads we once blacklisted — those
-         * offsets ARE the speaker/HP amp enables, TXSTATE already matches
-         * Linux 0x44000201 when playing). Still refuse 0x960/0x970. */
-        if (off == 0x960 || off == 0x970)
-            return kIOReturnNotPrivileged;
-        /* Also allow the alternate PADBAR=0xA50 layout (0xCD0/0xCE0). */
+        /* Community 0 is read-only; it contains unrelated hardware pads. */
+        return kIOReturnNotPrivileged;
     } else if (community == 1) {
         base = codec.getGpioAmpBase();
         len = codec.getGpioAmpLength();
-        /* Amp pads + HOSTSW + PADCFGLOCK/TX (group0) for unlock attempts. */
-        if (off != 0x0B50 && off != 0x0B60 && off != 0x0BC &&
-            off != 0x080 && off != 0x084)
+        /* speakers-enable = community 1, pad 8, PADCFG0 at 0x600+8*16 = 0x680.
+         * Refuse every other pad. */
+        if (off != 0x680)
             return kIOReturnNotPrivileged;
     } else {
         return kIOReturnBadArgument;
@@ -650,23 +633,22 @@ IOReturn MateBookAudioDevice::writeGPIO32(UInt32 offset, UInt32 value) {
     return kIOReturnSuccess;
 }
 
-IOReturn MateBookAudioDevice::i2cWriteReg(UInt8 reg, UInt8 val) {
+IOReturn MedionAudioDevice::i2cWriteReg(UInt8 reg, UInt8 val) {
     if (!codec.isReady()) {
         if (!codec.init()) return kIOReturnNotReady;
     }
     return codec.writeReg(reg, val) ? kIOReturnSuccess : kIOReturnIOError;
 }
 
-IOReturn MateBookAudioDevice::i2cReadReg(UInt8 reg, UInt8 *outVal) {
+IOReturn MedionAudioDevice::i2cReadReg(UInt8 reg, UInt8 *outVal) {
     if (!outVal) return kIOReturnBadArgument;
     if (!codec.isReady()) {
         if (!codec.init()) return kIOReturnNotReady;
     }
-    *outVal = codec.readReg(reg);
-    return kIOReturnSuccess;
+    return codec.readRegChecked(reg, outVal) ? kIOReturnSuccess : kIOReturnIOError;
 }
 
-IOReturn MateBookAudioDevice::getPhysicalAddrs(UInt64 *playPhys, UInt64 *capPhys, UInt64 *flagsPhys) {
+IOReturn MedionAudioDevice::getPhysicalAddrs(UInt64 *playPhys, UInt64 *capPhys, UInt64 *flagsPhys) {
     if (!playPhys || !capPhys || !flagsPhys) return kIOReturnBadArgument;
     *playPhys = 0; *capPhys = 0; *flagsPhys = 0;
     if (sharedDmaBuf) *playPhys = (UInt64)sharedDmaBuf->getPhysicalAddress();
@@ -677,13 +659,13 @@ IOReturn MateBookAudioDevice::getPhysicalAddrs(UInt64 *playPhys, UInt64 *capPhys
 
 // ==================== DSP Initialization ====================
 
-bool MateBookAudioDevice::initDSP(bool force, bool useStaging) {
+bool MedionAudioDevice::initDSP(bool force, bool useStaging) {
     volatile UInt8 *hda = hdaBase;
     volatile UInt8 *dsp = dspBase;
     if (!hda || !dsp || !hdaBarMap || !dspBarMap) return false;
     if (hwReady && !force) return true;
     if (force && hwReady) {
-        IOLog("MateBookAudio: initDSP force re-run (clearing hwReady)\n");
+        IOLog("MedionAudio: initDSP force re-run (clearing hwReady)\n");
         hwReady = false;
         isPlaying = false;
         isCapturing = false;
@@ -691,14 +673,14 @@ bool MateBookAudioDevice::initDSP(bool force, bool useStaging) {
         clearDspFailProps();
     }
 
-    IOLog("MateBookAudio: initDSP starting (force=%d useStaging=%d)...\n",
+    IOLog("MedionAudio: initDSP starting (force=%d useStaging=%d)...\n",
           force ? 1 : 0, useStaging ? 1 : 0);
 
     UInt16 gcap = rd16(hda, HDA_GCAP);
     int numISS = (gcap >> 8) & 0xF;
     int numOSS = (gcap >> 12) & 0xF;
     (void)numOSS;
-    IOLog("MateBookAudio: HDA GCAP=0x%04x (ISS=%d, OSS=%d)\n", gcap, numISS, numOSS);
+    IOLog("MedionAudio: HDA GCAP=0x%04x (ISS=%d, OSS=%d)\n", gcap, numISS, numOSS);
 
     sIdx = numISS;
     /* ROM code-loader IPC uses (sTag-1)<<9 and historically boots only with tag 1
@@ -764,11 +746,11 @@ bool MateBookAudioDevice::initDSP(bool force, bool useStaging) {
             }
         }
         if (useStaging && !fromStaging) {
-            IOLog("MateBookAudio: staging empty/zero — falling back to embedded sof_fw_data\n");
+            IOLog("MedionAudio: staging empty/zero — falling back to embedded sof_fw_data\n");
         }
     }
     if (pciDevice)
-        pciDevice->setProperty("MateBookAudio_FWSource", fromStaging ? "staging" : "embedded");
+        pciDevice->setProperty("MedionAudio_FWSource", fromStaging ? "staging" : "embedded");
 
     payloadOffset = 0;
     if (*(const UInt32 *)fwSrc == 0x6e614d58) // 'XMan'
@@ -776,12 +758,12 @@ bool MateBookAudioDevice::initDSP(bool force, bool useStaging) {
     payloadSize = fwSize - payloadOffset;
 
     if (payloadOffset >= fwSize || payloadSize == 0 || payloadSize > kCmlSOF_FwStagingSize) {
-        IOLog("MateBookAudio: FAILED bad FW payload (offset=%u, size=%u, total=%u)\n",
+        IOLog("MedionAudio: FAILED bad FW payload (offset=%u, size=%u, total=%u)\n",
               payloadOffset, payloadSize, fwSize);
         return false;
     }
 
-    IOLog("MateBookAudio: FW payload at offset %u, size %u bytes (src=%s)\n",
+    IOLog("MedionAudio: FW payload at offset %u, size %u bytes (src=%s)\n",
           payloadOffset, payloadSize, fromStaging ? "staging" : "embedded");
 
     UInt32 hdaLen = hdaBarMap ? (UInt32)hdaBarMap->getLength() : 0;
@@ -811,26 +793,26 @@ bool MateBookAudioDevice::initDSP(bool force, bool useStaging) {
     wr32(dsp, DSP_ADSPCS, rd32(dsp, DSP_ADSPCS) | ADSPCS_SPA(0xF));
     if (!poll32(dsp, DSP_ADSPCS, ADSPCS_CPA(0xF), ADSPCS_CPA(0xF), 50000)) {
         if (!poll32(dsp, DSP_ADSPCS, ADSPCS_CPA(1), ADSPCS_CPA(1), 20000)) {
-            IOLog("MateBookAudio: FAILED to power up DSP cores (ADSPCS=0x%08x)\n", rd32(dsp, DSP_ADSPCS));
+            IOLog("MedionAudio: FAILED to power up DSP cores (ADSPCS=0x%08x)\n", rd32(dsp, DSP_ADSPCS));
             if (pciDevice) {
                 char s[64]; snprintf(s, sizeof(s), "FAIL_PWR: ADSPCS=0x%08x", rd32(dsp, DSP_ADSPCS));
-                pciDevice->setProperty("MateBookAudio_DSPFail", s);
+                pciDevice->setProperty("MedionAudio_DSPFail", s);
             }
             return false;
         }
     }
-    IOLog("MateBookAudio: DSP cores powered up successfully (ADSPCS=0x%08x)\n", rd32(dsp, DSP_ADSPCS));
-    if (pciDevice) pciDevice->setProperty("MateBookAudio_Step", "2_CoresPowered");
+    IOLog("MedionAudio: DSP cores powered up successfully (ADSPCS=0x%08x)\n", rd32(dsp, DSP_ADSPCS));
+    if (pciDevice) pciDevice->setProperty("MedionAudio_Step", "2_CoresPowered");
 
     // Code-loader DMA from persistent fwStagingBuf (userspace MemFirmware / embedded copy).
     if (!allocateFwStaging()) {
-        IOLog("MateBookAudio: FAILED allocateFwStaging for code-loader\n");
+        IOLog("MedionAudio: FAILED allocateFwStaging for code-loader\n");
         return false;
     }
     {
         void *fwBytes = fwStagingBuf->getBytesNoCopy();
         if (!fwBytes) {
-            IOLog("MateBookAudio: FAILED fwStagingBuf getBytesNoCopy\n");
+            IOLog("MedionAudio: FAILED fwStagingBuf getBytesNoCopy\n");
             return false;
         }
         if (fromStaging) {
@@ -841,7 +823,7 @@ bool MateBookAudioDevice::initDSP(bool force, bool useStaging) {
         } else {
             // Embedded path: stage full RI then DMA stripped payload.
             if (fwSize > kCmlSOF_FwStagingSize) {
-                IOLog("MateBookAudio: FAILED embedded FW larger than staging (%u)\n", fwSize);
+                IOLog("MedionAudio: FAILED embedded FW larger than staging (%u)\n", fwSize);
                 return false;
             }
             memcpy(fwBytes, sof_fw_data, fwSize);
@@ -856,13 +838,13 @@ bool MateBookAudioDevice::initDSP(bool force, bool useStaging) {
         bdlBuf = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
             kIOMemoryPhysicallyContiguous | kIODirectionInOut, PAGE_SIZE, 0xFFFFFFFFFFFFF000ULL);
         if (!bdlBuf) {
-            IOLog("MateBookAudio: FAILED to allocate temp BDL\n");
+            IOLog("MedionAudio: FAILED to allocate temp BDL\n");
             return false;
         }
         bdlBuf->prepare();
         HdaBdlEntry *bdl = (HdaBdlEntry *)bdlBuf->getBytesNoCopy();
         if (!bdl) {
-            IOLog("MateBookAudio: FAILED BDL getBytesNoCopy\n");
+            IOLog("MedionAudio: FAILED BDL getBytesNoCopy\n");
             bdlBuf->complete(); bdlBuf->release();
             return false;
         }
@@ -880,7 +862,7 @@ bool MateBookAudioDevice::initDSP(bool force, bool useStaging) {
             rem -= chunk; boff += chunk;
         }
         if (rem != 0) {
-            IOLog("MateBookAudio: FAILED BDL incomplete rem=%u\n", rem);
+            IOLog("MedionAudio: FAILED BDL incomplete rem=%u\n", rem);
             bdlBuf->complete(); bdlBuf->release();
             return false;
         }
@@ -916,7 +898,7 @@ bool MateBookAudioDevice::initDSP(bool force, bool useStaging) {
     }
 
     if (!poll32(dsp, IPC_HIPCIDA, IPC_DONE, IPC_DONE, 500000)) {
-        IOLog("MateBookAudio: FAILED waiting for ROM IPC purge/control\n");
+        IOLog("MedionAudio: FAILED waiting for ROM IPC purge/control\n");
         bdlBuf->complete(); bdlBuf->release();
         return false;
     }
@@ -934,13 +916,13 @@ bool MateBookAudioDevice::initDSP(bool force, bool useStaging) {
             if ((rd32(dsp, ROM_STATUS) & 0xFFFFFF) == FSR_INIT_DONE) { initDone = true; break; }
             IOSleep(1);
         }
-        IOLog("MateBookAudio: DSP ROM Status after un-reset: 0x%08x\n", rd32(dsp, ROM_STATUS));
+        IOLog("MedionAudio: DSP ROM Status after un-reset: 0x%08x\n", rd32(dsp, ROM_STATUS));
         if (pciDevice) {
             char s[64]; snprintf(s, sizeof(s), "ROM=0x%08x", rd32(dsp, ROM_STATUS));
-            pciDevice->setProperty("MateBookAudio_ROMStatus", s);
+            pciDevice->setProperty("MedionAudio_ROMStatus", s);
         }
         if (!initDone) {
-            IOLog("MateBookAudio: FAILED waiting for FSR_INIT_DONE (ROM_STATUS=0x%08x err=0x%x)\n",
+            IOLog("MedionAudio: FAILED waiting for FSR_INIT_DONE (ROM_STATUS=0x%08x err=0x%x)\n",
                   rd32(dsp, ROM_STATUS), rd32(dsp, ROM_STATUS + 4));
             bdlBuf->complete(); bdlBuf->release();
             return false;
@@ -968,17 +950,17 @@ bool MateBookAudioDevice::initDSP(bool force, bool useStaging) {
     if (!fwLoaded) {
         UInt32 romSt = rd32(dsp, ROM_STATUS);
         UInt32 romErr = rd32(dsp, ROM_STATUS + 4);
-        IOLog("MateBookAudio: FAILED to boot SOF firmware (ROM_STATUS=0x%08x err=0x%x)\n",
+        IOLog("MedionAudio: FAILED to boot SOF firmware (ROM_STATUS=0x%08x err=0x%x)\n",
               romSt, romErr);
         if (pciDevice) {
             char s[80];
             snprintf(s, sizeof(s), "FW_FAIL: ROM=0x%08x err=0x%x", romSt, romErr);
-            pciDevice->setProperty("MateBookAudio_DSPFail", s);
+            pciDevice->setProperty("MedionAudio_DSPFail", s);
         }
         return false;
     }
-    IOLog("MateBookAudio: SOF firmware loaded and entered successfully!\n");
-    if (pciDevice) pciDevice->setProperty("MateBookAudio_Step", "3_FW_Booted");
+    IOLog("MedionAudio: SOF firmware loaded and entered successfully!\n");
+    if (pciDevice) pciDevice->setProperty("MedionAudio_Step", "3_FW_Booted");
 
     for (int t = 0; t < 1000; t++) {
         if (rd32(dsp, IPC_HIPCTDR) & IPC_BUSY) break;
@@ -998,7 +980,7 @@ bool MateBookAudioDevice::initDSP(bool force, bool useStaging) {
                      (rd32(mb, 0x40) >> 24) & 0xFF, (rd32(mb, 0x40) >> 16) & 0xFF,
                      rd32(mb, 0x40) & 0xFF);
             setProperty("FW-Version", ver);
-            IOLog("MateBookAudio: SOF FW Version: %s\n", ver);
+            IOLog("MedionAudio: SOF FW Version: %s\n", ver);
 
             UInt32 extOff = MBOX_UPLINK + hSz;
             for (int i = 0; i < 20; i++) {
@@ -1021,7 +1003,7 @@ bool MateBookAudioDevice::initDSP(bool force, bool useStaging) {
         }
     }
     if (!outboxOff) outboxOff = 0x82000;
-    IOLog("MateBookAudio: DSP Outbox mailbox offset: 0x%x\n", outboxOff);
+    IOLog("MedionAudio: DSP Outbox mailbox offset: 0x%x\n", outboxOff);
 
     wr32(dsp, IPC_HIPCTDR, rd32(dsp, IPC_HIPCTDR) | IPC_BUSY);
     wr32(dsp, IPC_HIPCTDA, IPC_DONE);
@@ -1054,7 +1036,7 @@ bool MateBookAudioDevice::initDSP(bool force, bool useStaging) {
             ipcOk++;
         } else {
             ipcFail++;
-            IOLog("MateBookAudio: IPC error %u (0x%x) on %s\n", err, err, name ? name : "unknown");
+            IOLog("MedionAudio: IPC error %u (0x%x) on %s\n", err, err, name ? name : "unknown");
             if (name) setProperty("TplgLastFail", name);
         }
         return err;
@@ -1064,19 +1046,16 @@ bool MateBookAudioDevice::initDSP(bool force, bool useStaging) {
     streamReset(hda, sd);
 
     /*
-     * Topology for Huawei quirk 0x1B0 (SSP0 + DMIC + HP/SPK GPIOs):
-     * mirrors sof-cml-es8336-dmic2ch-ssp0.tplg essentials —
-     *   PIPELINE.1 SSP0.OUT playback (ES8336 codec)
-     *   PIPELINE.3 DMIC0.IN capture  (2ch, single PDM controller)
-     * Linux gold (mega1 HEARD + tplg):
-     *   HOST FRAME_S32 (FE fmt 10 / s32le), DAI FRAME_S24 (SSP widget s24le),
-     *   SSP MCLK 24 MHz / BCLK 2.4 MHz / 24 valid / 25-slot, codec LEN_24.
-     * HOST=DAI=S32 with 24-bit SSP scrambled the bit window → air on SPK+HP.
-     * Full ALSA tplg also has SSP0.IN, DMIC16k, HDMI, PGA/EQ; not loaded.
+     * Topology for the MEDION E15415 (NP1xCM), matching the stock Linux
+     * sof-cml-es8336-ssp0.tplg used by sof_es8336 with quirk 0x0:
+     *   PIPELINE.1 SSP0.OUT playback (ES8326 codec)
+     *   PIPELINE.2 SSP0.IN  capture  (internal MIC1 or headset MIC2)
+     * HOST FRAME_S32 (s32le), DAI FRAME_S24 (s24le), SSP MCLK 19.2 MHz /
+     * BCLK 2.4 MHz / 24 valid / 25-slot, codec LEN_24.
      */
-    setProperty("TplgTarget", "sof-cml-es8336-dmic2ch-ssp0 (quirk 0x1B0)");
+    setProperty("TplgTarget", "sof-cml-es8336-ssp0 (quirk 0x0)");
 
-    // ==================== PIPELINE 1: SSP0 playback (ES8336) ====================
+    // ==================== PIPELINE 1: SSP0 playback (ES8326) ====================
     // HOST S32 + DAI S24 — matches tplg s32le host / s24le SSP0.OUT (CmlSOF same DAI).
     { struct { UInt32 size, cmd, comp_id, pipeline_id, sched_id, core,
                period, priority, period_mips, frames_per_sched,
@@ -1102,7 +1081,7 @@ bool MateBookAudioDevice::initDSP(bool force, bool useStaging) {
       m[9]=0; m[10]=2; m[11]=0; m[12]=FRAME_S24; m[13]=XRUN_STOP;
       m[16]=DIR_PLAYBACK; m[17]=0; m[18]=DAI_SSP;
       sendIpcTracked(m, 80, "PIPE1_DAI"); }
-    /* DAI_CONFIG SSP0 — mirror DMIC: flags=NONE at topology load; HW_PARAMS
+    /* DAI_CONFIG SSP0 — flags=NONE at topology load; HW_PARAMS
      * at startPlayback actually starts BCLK/FS/MCLK. Pack format as u16
      * (0x01004001 as u32 wrongly set HW_PARAMS early with ssp hdr.size=0).
      * FW ABI 3.1.1 accepts mclk_rate at ssp+8 (not Linux dai-intel.h +12). */
@@ -1164,82 +1143,26 @@ bool MateBookAudioDevice::initDSP(bool force, bool useStaging) {
     { struct { UInt32 s,c,id; } __attribute__((packed)) m = {12, 0x30130000, PIPE2_SCHED_ID};
       sendIpcTracked(&m, 12, "PIPE2_COMPLETE"); }
 
-    // ==================== PIPELINE 3: DMIC0 2ch capture (quirk 0x1B0) ====================
-    // tplg: PIPELINE.3.DMIC0.IN = DAI→BUF→EQIIR→BUF→vol→BUF→Host (we keep DAI→BUF→Host).
-    // PCM caps: 48 kHz, channels 2..2, s32le. BUF_SIZE=768, NUM_PDM_ACTIVE=1,
-    // UNMUTE_RAMP_TIME_MS token 610=200 (dmic01; dmic16k uses 400).
-    { struct { UInt32 size, cmd, comp_id, pipeline_id, sched_id, core,
-               period, priority, period_mips, frames_per_sched,
-               xrun_limit_usecs, time_domain; } __attribute__((packed)) m = {
-          48, 0x30100000, PIPE3_SCHED_ID, PIPE3_ID, PIPE3_HOST_ID, 0,
-          1000, 0, 5000, 0, 0, TIME_TIMER };
-      sendIpcTracked(&m, sizeof(m), "PIPE3_SCHED"); }
-    { struct { UInt32 size, cmd, id, type, pipeline_id, core, ext,
-               buf_size, caps, flags, reserved; } __attribute__((packed)) m = {
-          44, 0x30200000, PIPE3_BUF0_ID, COMP_BUFFER, PIPE3_ID, 0, 0,
-          19200, 0x71, 0, 0 };
-      sendIpcTracked(&m, sizeof(m), "PIPE3_BUF0"); }
-    { UInt32 m[76/4] = {}; m[0]=76; m[1]=0x30010000; m[2]=PIPE3_HOST_ID;
-      m[3]=COMP_HOST; m[4]=PIPE3_ID; m[7]=36;
-      m[9]=2; m[10]=2; m[12]=FRAME_S32;
-      m[16]=DIR_CAPTURE;
-      sendIpcTracked(m, 76, "PIPE3_HOST"); }
-    { UInt32 m[80/4] = {}; m[0]=80; m[1]=0x30010000; m[2]=PIPE3_DAI_ID;
-      m[3]=COMP_DAI; m[4]=PIPE3_ID; m[7]=36;
-      m[10]=2; m[12]=FRAME_S32;
-      m[16]=DIR_CAPTURE; m[17]=0; m[18]=DAI_DMIC;
-      sendIpcTracked(m, 80, "PIPE3_DAI"); }
-    /* DAI_CONFIG DMIC0 — sof_ipc_dai_config.format is uint16 SOF_DAI_FMT_PDM=6.
-     * Writing 0x01000000 as u32 zeroed format and only set flags=HW_PARAMS (broken). */
-    { UInt8 m[216] = {};
-      *(UInt32*)(m+0)=216; *(UInt32*)(m+4)=0x80010000;
-      *(UInt32*)(m+8)=DAI_DMIC; *(UInt32*)(m+12)=0;
-      *(UInt16*)(m+16)=6;        /* SOF_DAI_FMT_PDM */
-      m[18]=0;                   /* group_id */
-      m[19]=0;                   /* flags NONE at topology load */
-      UInt8 *d=m+52;
-      *(UInt32*)(d+0)=0;
-      *(UInt32*)(d+4)=1;
-      *(UInt32*)(d+8)=2400000;
-      *(UInt32*)(d+12)=4800000;
-      *(UInt32*)(d+16)=48000;
-      *(UInt16*)(d+24)=32; *(UInt16*)(d+26)=32;
-      *(UInt16*)(d+28)=40; *(UInt16*)(d+30)=60;
-      *(UInt32*)(d+32)=1;        /* num_pdm_active = 1 (dmic2ch) */
-      *(UInt32*)(d+36)=80000;    /* wake_up_time us */
-      *(UInt32*)(d+40)=2000;     /* min_clock_on_time us */
-      *(UInt32*)(d+44)=200;      /* unmute_ramp_time ms (tplg token 610) */
-      /* pdm[0] at offset 120: reserved0 + id/mic_a/mic_b */
-      *(UInt32*)(m+120)=0;
-      *(UInt16*)(m+124)=0; *(UInt16*)(m+126)=1; *(UInt16*)(m+128)=1;
-      sendIpcTracked(m, 216, "PIPE3_DAI_CONFIG"); }
-    { struct { UInt32 s,c,src,dst; } __attribute__((packed)) conn[] = {
-          {16, 0x30030000, PIPE3_DAI_ID, PIPE3_BUF0_ID},
-          {16, 0x30030000, PIPE3_BUF0_ID, PIPE3_HOST_ID} };
-      for (int c = 0; c < 2; c++) sendIpcTracked(&conn[c], 16, "PIPE3_CONN"); }
-    { struct { UInt32 s,c,id; } __attribute__((packed)) m = {12, 0x30130000, PIPE3_SCHED_ID};
-      sendIpcTracked(&m, 12, "PIPE3_COMPLETE"); }
-
-    IOLog("MateBookAudio: IPC Topology (quirk 0x1B0 SSP0+DMIC2+SSP0.IN): %d OK, %d FAIL\n",
+    IOLog("MedionAudio: IPC Topology (quirk 0x0 SSP0.OUT+SSP0.IN): %d OK, %d FAIL\n",
           ipcOk, ipcFail);
     char topStr[48];
-    snprintf(topStr, sizeof(topStr), "0x1B0 SSP0+DMIC2+SSP0.IN: %d OK, %d FAIL", ipcOk, ipcFail);
+    snprintf(topStr, sizeof(topStr), "0x0 SSP0.OUT+SSP0.IN: %d OK, %d FAIL", ipcOk, ipcFail);
     setProperty("Topology", topStr);
 
     // PM_CTX_RESTORE (clears pm_prepare_D3 in firmware)
     { UInt32 pm[3] = {12, 0x40020000, 0};
       UInt32 pmr = sendIpc(pm, 12);
-      IOLog("MateBookAudio: PM_CTX_RESTORE returned %u\n", pmr);
+      IOLog("MedionAudio: PM_CTX_RESTORE returned %u\n", pmr);
       char pmstr[32]; snprintf(pmstr, sizeof(pmstr), "PM_RESTORE=%u", pmr);
       setProperty("PM", pmstr);
     }
 
     if (!allocateDmaBuffers()) {
-        IOLog("MateBookAudio: FAILED to allocate shared/capture DMA buffers\n");
+        IOLog("MedionAudio: FAILED to allocate shared/capture DMA buffers\n");
         return false;
     }
 
-    IOLog("MateBookAudio: DMA buffers allocated: sharedDmaBuf=0x%llx, capDmaBuf=0x%llx\n",
+    IOLog("MedionAudio: DMA buffers allocated: sharedDmaBuf=0x%llx, capDmaBuf=0x%llx\n",
           (UInt64)sharedDmaBuf->getPhysicalAddress(), (UInt64)capDmaBuf->getPhysicalAddress());
 
     codec.silenceAmps();
@@ -1247,23 +1170,22 @@ bool MateBookAudioDevice::initDSP(bool force, bool useStaging) {
     hwReady = true;
     setProperty("Status", "Ready");
     if (pciDevice) {
-        pciDevice->setProperty("MateBookAudio_Step", "4_DSP_Ready");
-        pciDevice->setProperty("MateBookAudioDSPStatus", "Active");
+        pciDevice->setProperty("MedionAudio_Step", "4_DSP_Ready");
+        pciDevice->setProperty("MedionAudioDSPStatus", "Active");
     }
     return true;
 }
 
 // ==================== Playback & Capture Control ====================
 
-IOReturn MateBookAudioDevice::startPlaybackGated() {
+IOReturn MedionAudioDevice::startPlaybackGated() {
     if (!hwReady || !hdaBase || !dspBase || !sharedDmaBuf || !sharedBdlBuf) return kIOReturnNotReady;
     if (isPlaying) stopPlaybackGated();
 
     if (!codecConfigured) {
-        if (codec.init()) {
-            codec.configure(); /* one-shot I2C: speakers preferred + DAC unmuted */
+        if (codec.init() && codec.configure()) {
             codecConfigured = true;
-            setProperty("Codec", "ES8336 (ESSX8336)");
+            setProperty("Codec", "ES8326 (ESSX8326)");
             setProperty("CodecStatus", codec.getStatus());
         }
     }
@@ -1319,7 +1241,7 @@ IOReturn MateBookAudioDevice::startPlaybackGated() {
       if ((dplbase & ~1U) == 0 && (dplbase & 1U)) {
           wr32(hdaBase, 0x70, 0);
           wr32(hdaBase, 0x74, 0);
-          IOLog("MateBookAudio: cleared DPLBASE (was enabled at phys 0)\n");
+          IOLog("MedionAudio: cleared DPLBASE (was enabled at phys 0)\n");
       }
     }
 
@@ -1327,7 +1249,7 @@ IOReturn MateBookAudioDevice::startPlaybackGated() {
 
     if (!(isCapturing && capActiveHost == PIPE2_HOST_ID))   /* SSP0 already running for headset capture */
     /* SSP0 DAI_CONFIG HW_PARAMS — starts physical BCLK/FS/MCLK on SSP0 pins.
-     * Topology used flags=NONE (same pattern as DMIC capture). Non-fatal on
+     * Topology used flags=NONE. Non-fatal on
      * failure so host DMA still runs for diagnosis; acoustic out needs success. */
     {
       UInt8 m[216] = {};
@@ -1356,7 +1278,7 @@ IOReturn MateBookAudioDevice::startPlaybackGated() {
       wr32(dspBase, IPC_HIPCCTL, rd32(dspBase, IPC_HIPCCTL) | 0x03);
       wr32(dspBase, IPC_HIPCIDR, IPC_BUSY);
       if (!poll32(dspBase, IPC_HIPCIDA, IPC_DONE, IPC_DONE, 500000)) {
-          IOLog("MateBookAudio: Playback SSP0 DAI_CONFIG HW_PARAMS timeout (clocks may be dead)\n");
+          IOLog("MedionAudio: Playback SSP0 DAI_CONFIG HW_PARAMS timeout (clocks may be dead)\n");
           setProperty("SSP0Clocks", "HW_PARAMS timeout");
       } else {
           UInt32 replyErr = rd32(ob, 8);
@@ -1364,12 +1286,12 @@ IOReturn MateBookAudioDevice::startPlaybackGated() {
           wr32(dspBase, IPC_HIPCCTL, rd32(dspBase, IPC_HIPCCTL) | 0x03);
           drainDspIpc(dspBase);
           if (replyErr != 0) {
-              IOLog("MateBookAudio: Playback SSP0 DAI_CONFIG HW_PARAMS replyErr=0x%x\n", replyErr);
+              IOLog("MedionAudio: Playback SSP0 DAI_CONFIG HW_PARAMS replyErr=0x%x\n", replyErr);
               char errStr[48];
               snprintf(errStr, sizeof(errStr), "HW_PARAMS err=0x%x", replyErr);
               setProperty("SSP0Clocks", errStr);
           } else {
-              IOLog("MateBookAudio: Playback SSP0 DAI_CONFIG HW_PARAMS ok (MCLK_AON)\n");
+              IOLog("MedionAudio: Playback SSP0 DAI_CONFIG HW_PARAMS ok (MCLK_AON)\n");
               setProperty("SSP0Clocks", "HW_PARAMS ok");
           }
       }
@@ -1408,7 +1330,7 @@ IOReturn MateBookAudioDevice::startPlaybackGated() {
       wr32(dspBase, IPC_HIPCCTL, rd32(dspBase, IPC_HIPCCTL) | 0x03);
       drainDspIpc(dspBase);
       if (replyErr != 0) {
-          IOLog("MateBookAudio: Playback PCM_PARAMS failed with replyErr=0x%x\n", replyErr);
+          IOLog("MedionAudio: Playback PCM_PARAMS failed with replyErr=0x%x\n", replyErr);
           return kIOReturnIOError;
       }
     }
@@ -1444,15 +1366,16 @@ IOReturn MateBookAudioDevice::startPlaybackGated() {
       wr32(dspBase, IPC_HIPCIDA, rd32(dspBase, IPC_HIPCIDA) | IPC_DONE);
       wr32(dspBase, IPC_HIPCCTL, rd32(dspBase, IPC_HIPCCTL) | 0x03);
       if (replyErr != 0) {
-          IOLog("MateBookAudio: Playback TRIG_START host failed replyErr=0x%x\n", replyErr);
+          IOLog("MedionAudio: Playback TRIG_START host failed replyErr=0x%x\n", replyErr);
           return kIOReturnIOError;
       }
     }
-    /* Re-assert analog power + speaker amps. CoreAudio/I2C races can leave
-     * SYS_PDN=0x3F, and the topology-load path silences the amps. */
+    /* Re-assert the analog output + speaker amp. The topology-load path and
+     * CoreAudio/I2C races can leave the DAC muted, so unmute first and enable
+     * the external amp 70 ms later (anti-pop, as in sof_es8336). */
     if (codecConfigured) {
-        codec.writeReg(ES8316_SYS_PDN, codec.sysPdn());
         codec.mute(false);
+        IOSleep(70);
         codec.setSpeakerEnable(!codec.isHeadphoneInserted());
     }
 
@@ -1461,17 +1384,20 @@ IOReturn MateBookAudioDevice::startPlaybackGated() {
     return kIOReturnSuccess;
 }
 
-IOReturn MateBookAudioDevice::stopPlaybackGated() {
+IOReturn MedionAudioDevice::stopPlaybackGated() {
     if (!isPlaying) return kIOReturnSuccess;
     if (!hdaBase || !dspBase) {
         isPlaying = false;
         return kIOReturnNotReady;
     }
 
-    /* Do NOT I2C-mute DAC here: stopPlayback used to write I2C[0x30]=0x20, and
-     * startPlaybackGated only calls codec.configure() once (codecConfigured),
-     * so every later StartIO left the DAC soft-muted forever. DMA stop +
-     * bzero(sharedDmaBuf) already silences output without trackpad I2C traffic. */
+    /* Mute before stopping clocks to reduce clicks. startPlaybackGated() runs
+     * the ES8326 unmute sequence again before enabling the speaker amplifier. */
+    if (codecConfigured) {
+        codec.mute(true);
+        IOSleep(20);
+        codec.setSpeakerEnable(false);
+    }
 
     wr8(hdaBase, sd, rd8(hdaBase, sd) & ~(UInt8)(SD_CTL_RUN | SD_CTL_IOCE | 0x08 | 0x10));
 
@@ -1523,24 +1449,26 @@ IOReturn MateBookAudioDevice::stopPlaybackGated() {
     return kIOReturnSuccess;
 }
 
-UInt32 MateBookAudioDevice::getSamplePosition() {
+UInt32 MedionAudioDevice::getSamplePosition() {
     if (!hwReady || !hdaBase) return 0;
     UInt32 dpib = rd32(hdaBase, HDA_VS_SDXDPIB_XBASE + HDA_VS_SDXDPIB_XINTERVAL * (UInt32)sIdx);
     return dpib / kCmlSOF_BytesPerFrame;
 }
 
-IOReturn MateBookAudioDevice::updateSPIB(UInt32 byteOffset) {
+IOReturn MedionAudioDevice::updateSPIB(UInt32 byteOffset) {
     /* SPIB disabled on playback start. Ignore HAL write-cursor updates —
      * shrinking SPIB to the mix offset stalls HDA DMA (LPIB stuck at SPIB). */
     (void)byteOffset;
     return (hwReady && isPlaying) ? kIOReturnSuccess : kIOReturnNotReady;
 }
 
-IOReturn MateBookAudioDevice::startCaptureGated() {
+IOReturn MedionAudioDevice::startCaptureGated() {
     if (!hwReady || !hdaBase || !dspBase || !capDmaBuf || !capBdlBuf) return kIOReturnNotReady;
     if (isCapturing) return kIOReturnSuccess;
-    const UInt32 capHost = (captureSource == 1) ? PIPE2_HOST_ID : PIPE3_HOST_ID;
-    codec.setHeadsetMic(captureSource == 1);
+    /* Both capture sources (internal MIC1 / headset MIC2) use the same
+     * SSP0.IN pipeline; only the codec analog front-end changes. */
+    const UInt32 capHost = PIPE2_HOST_ID;
+    codec.setCaptureMic(captureSource == 1);
 
     /* Match BDL periods (4 × hostPeriod) — not PAGE_SIZE count (was pages=32 vs LVI=3). */
     UInt32 numPeriods = 4;
@@ -1570,7 +1498,7 @@ IOReturn MateBookAudioDevice::startCaptureGated() {
 
     wr8(hdaBase, capSd + 2, (UInt8)((capTag & 0xF) << 4));
     wr32(hdaBase, capSd + SD_REG_CBL, kCmlSOF_CapBufferSize);
-    /* HDA SD_FMT: base 48 kHz, bits=32 (4<<4), chans-1=1 → 2ch S32 (quirk 0x1B0) */
+    /* HDA SD_FMT: base 48 kHz, bits=32 (4<<4), chans-1=1 → 2ch S32. */
     wr16(hdaBase, capSd + SD_REG_FMT, 0x0041);
     wr16(hdaBase, capSd + SD_REG_LVI, (UInt16)(numPeriods - 1));
     wr32(hdaBase, capSd + SD_REG_BDLPL, (UInt32)(bdlPhys & 0xFFFFFFFF));
@@ -1586,7 +1514,7 @@ IOReturn MateBookAudioDevice::startCaptureGated() {
       if ((dplbase & ~1U) == 0 && (dplbase & 1U)) {
           wr32(hdaBase, 0x70, 0);
           wr32(hdaBase, 0x74, 0);
-          IOLog("MateBookAudio: cleared DPLBASE (was enabled at phys 0)\n");
+          IOLog("MedionAudio: cleared DPLBASE (was enabled at phys 0)\n");
       }
     }
 
@@ -1596,51 +1524,11 @@ IOReturn MateBookAudioDevice::startCaptureGated() {
 
     wr8(hdaBase, capSd, rd8(hdaBase, capSd) | SD_CTL_IOCE | 0x08 | 0x10);
 
-    /* Headset mic: SSP0 is shared with playback — only start its clocks if
-     * playback has not already started them. */
-    if (capHost == PIPE2_HOST_ID) {
-        if (!isPlaying) {
-            IOReturn r = sspDaiConfig(SOF_DAI_CONFIG_FLAGS_HW_PARAMS);
-            if (r != kIOReturnSuccess) return r;
-        }
-    } else
-    /* Second DMIC DAI_CONFIG with HW_PARAMS — starts PDM clocks (topology used flags=0). */
-    {
-      UInt8 m[216] = {};
-      *(UInt32*)(m+0)=216; *(UInt32*)(m+4)=0x80010000;
-      *(UInt32*)(m+8)=DAI_DMIC; *(UInt32*)(m+12)=0;
-      *(UInt16*)(m+16)=6;        /* SOF_DAI_FMT_PDM */
-      m[18]=0;
-      m[19]=0x01;                /* SOF_DAI_CONFIG_FLAGS_HW_PARAMS */
-      UInt8 *d=m+52;
-      *(UInt32*)(d+0)=0;
-      *(UInt32*)(d+4)=1;
-      *(UInt32*)(d+8)=2400000;
-      *(UInt32*)(d+12)=4800000;
-      *(UInt32*)(d+16)=48000;
-      *(UInt16*)(d+24)=32; *(UInt16*)(d+26)=32;
-      *(UInt16*)(d+28)=40; *(UInt16*)(d+30)=60;
-      *(UInt32*)(d+32)=1;
-      *(UInt32*)(d+36)=80000;
-      *(UInt32*)(d+40)=2000;
-      *(UInt32*)(d+44)=200;
-      *(UInt16*)(m+124)=0; *(UInt16*)(m+126)=1; *(UInt16*)(m+128)=1;
-      drainDspIpc(dspBase);
-      volatile UInt8 *ob = dspBase + outboxOff;
-      for (UInt32 i = 0; i < sizeof(m); i += 4) wr32(ob, i, *(UInt32*)(m + i));
-      wr32(dspBase, IPC_HIPCIDA, rd32(dspBase, IPC_HIPCIDA) | IPC_DONE);
-      wr32(dspBase, IPC_HIPCCTL, rd32(dspBase, IPC_HIPCCTL) | 0x03);
-      wr32(dspBase, IPC_HIPCIDR, IPC_BUSY);
-      if (!poll32(dspBase, IPC_HIPCIDA, IPC_DONE, IPC_DONE, 500000))
-          return kIOReturnTimeout;
-      UInt32 replyErr = rd32(ob, 8);
-      wr32(dspBase, IPC_HIPCIDA, rd32(dspBase, IPC_HIPCIDA) | IPC_DONE);
-      wr32(dspBase, IPC_HIPCCTL, rd32(dspBase, IPC_HIPCCTL) | 0x03);
-      drainDspIpc(dspBase);
-      if (replyErr != 0) {
-          IOLog("MateBookAudio: Capture DMIC DAI_CONFIG HW_PARAMS failed replyErr=0x%x\n", replyErr);
-          return kIOReturnIOError;
-      }
+    /* SSP0 is shared with playback: only start its clocks if playback has
+     * not already started them. */
+    if (!isPlaying) {
+        IOReturn r = sspDaiConfig(SOF_DAI_CONFIG_FLAGS_HW_PARAMS);
+        if (r != kIOReturnSuccess) return r;
     }
 
     { struct sof_ipc_pcm_params pcm = {};
@@ -1675,7 +1563,7 @@ IOReturn MateBookAudioDevice::startCaptureGated() {
       wr32(dspBase, IPC_HIPCCTL, rd32(dspBase, IPC_HIPCCTL) | 0x03);
       drainDspIpc(dspBase);
       if (replyErr != 0) {
-          IOLog("MateBookAudio: Capture PCM_PARAMS failed with replyErr=0x%x\n", replyErr);
+          IOLog("MedionAudio: Capture PCM_PARAMS failed with replyErr=0x%x\n", replyErr);
           return kIOReturnIOError;
       }
     }
@@ -1700,18 +1588,19 @@ IOReturn MateBookAudioDevice::startCaptureGated() {
       wr32(dspBase, IPC_HIPCCTL, rd32(dspBase, IPC_HIPCCTL) | 0x03);
       drainDspIpc(dspBase);
       if (replyErr != 0) {
-          IOLog("MateBookAudio: Capture TRIG_START failed with replyErr=0x%x\n", replyErr);
+          IOLog("MedionAudio: Capture TRIG_START failed with replyErr=0x%x\n", replyErr);
           return kIOReturnIOError;
       }
     }
 
     capActiveHost = capHost;
-    setProperty("CaptureSource", capHost == PIPE2_HOST_ID ? "Headset MIC1/SSP0.IN" : "DMIC PIPE3");
+    setProperty("CaptureSource", captureSource == 1 ? "Headset MIC2/SSP0.IN"
+                                                   : "Internal MIC1/SSP0.IN");
     isCapturing = true;
     return kIOReturnSuccess;
 }
 
-IOReturn MateBookAudioDevice::stopCaptureGated() {
+IOReturn MedionAudioDevice::stopCaptureGated() {
     if (!isCapturing) return kIOReturnSuccess;
     if (!hdaBase || !dspBase) {
         isCapturing = false;
@@ -1737,35 +1626,8 @@ IOReturn MateBookAudioDevice::stopCaptureGated() {
     sendCapIpc(0x60050000); // TRIG_STOP
     sendCapIpc(0x60030000); // PCM_FREE
 
-    if (capActiveHost == PIPE2_HOST_ID) {
-        isCapturing = false;                 /* before HW_FREE: playback may keep SSP0 */
-        if (!isPlaying) sspDaiConfig(SOF_DAI_CONFIG_FLAGS_HW_FREE);
-    } else
-    /* DAI_CONFIG HW_FREE — release PDM clocks after stream teardown. */
-    {
-      UInt8 m[216] = {};
-      *(UInt32*)(m+0)=216; *(UInt32*)(m+4)=0x80010000;
-      *(UInt32*)(m+8)=DAI_DMIC; *(UInt32*)(m+12)=0;
-      *(UInt16*)(m+16)=6;
-      m[18]=0; m[19]=0x02; /* SOF_DAI_CONFIG_FLAGS_HW_FREE */
-      UInt8 *d=m+52;
-      *(UInt32*)(d+0)=0; *(UInt32*)(d+4)=1;
-      *(UInt32*)(d+8)=2400000; *(UInt32*)(d+12)=4800000; *(UInt32*)(d+16)=48000;
-      *(UInt16*)(d+24)=32; *(UInt16*)(d+26)=32;
-      *(UInt16*)(d+28)=40; *(UInt16*)(d+30)=60;
-      *(UInt32*)(d+32)=1;
-      *(UInt32*)(d+36)=80000; *(UInt32*)(d+40)=2000; *(UInt32*)(d+44)=200;
-      *(UInt16*)(m+124)=0; *(UInt16*)(m+126)=1; *(UInt16*)(m+128)=1;
-      drainDspIpc(dspBase);
-      volatile UInt8 *ob = dspBase + outboxOff;
-      for (UInt32 i = 0; i < sizeof(m); i += 4) wr32(ob, i, *(UInt32*)(m + i));
-      wr32(dspBase, IPC_HIPCIDA, rd32(dspBase, IPC_HIPCIDA) | IPC_DONE);
-      wr32(dspBase, IPC_HIPCCTL, rd32(dspBase, IPC_HIPCCTL) | 0x03);
-      wr32(dspBase, IPC_HIPCIDR, IPC_BUSY);
-      poll32(dspBase, IPC_HIPCIDA, IPC_DONE, IPC_DONE, 500000);
-      wr32(dspBase, IPC_HIPCIDA, rd32(dspBase, IPC_HIPCIDA) | IPC_DONE);
-      drainDspIpc(dspBase);
-    }
+    isCapturing = false;                 /* before HW_FREE: playback may keep SSP0 */
+    if (!isPlaying) sspDaiConfig(SOF_DAI_CONFIG_FLAGS_HW_FREE);
 
     if (capDmaBuf) {
         void *cb = capDmaBuf->getBytesNoCopy();
@@ -1775,7 +1637,7 @@ IOReturn MateBookAudioDevice::stopCaptureGated() {
     return kIOReturnSuccess;
 }
 
-UInt32 MateBookAudioDevice::getCapturePosition() {
+UInt32 MedionAudioDevice::getCapturePosition() {
     if (!hwReady || !hdaBase) return 0;
     UInt32 dpib = rd32(hdaBase, HDA_VS_SDXDPIB_XBASE + HDA_VS_SDXDPIB_XINTERVAL * (UInt32)capIdx);
     return dpib / kCmlSOF_CapBytesPerFrame;
@@ -1783,7 +1645,7 @@ UInt32 MateBookAudioDevice::getCapturePosition() {
 
 // ==================== Power Management & Command Gate ====================
 
-void MateBookAudioDevice::fastMute() {
+void MedionAudioDevice::fastMute() {
     codec.mute(true);
     codec.silenceAmps();
     if (sharedDmaBuf) {
@@ -1792,19 +1654,19 @@ void MateBookAudioDevice::fastMute() {
     }
 }
 
-IOReturn MateBookAudioDevice::sPowerInterestHandler(void *target, void *refCon,
+IOReturn MedionAudioDevice::sPowerInterestHandler(void *target, void *refCon,
                                                     UInt32 messageType, IOService *provider,
                                                     void *messageArg, vm_size_t argSize) {
-    auto *dev = static_cast<MateBookAudioDevice *>(target);
+    auto *dev = static_cast<MedionAudioDevice *>(target);
     if (!dev || !dev->commandGate) return kIOReturnSuccess;
 
     switch (messageType) {
         case kIOMessageSystemWillSleep:
-            dev->commandGate->runAction(&MateBookAudioDevice::s_handleWillSleep);
+            dev->commandGate->runAction(&MedionAudioDevice::s_handleWillSleep);
             break;
         case kIOPMMessageClamshellStateChange: {
             uintptr_t closed = (uintptr_t)messageArg & 0x01;
-            dev->commandGate->runAction(&MateBookAudioDevice::s_handleClamshellChange, (void *)closed);
+            dev->commandGate->runAction(&MedionAudioDevice::s_handleClamshellChange, (void *)closed);
             break;
         }
         default:
@@ -1813,11 +1675,11 @@ IOReturn MateBookAudioDevice::sPowerInterestHandler(void *target, void *refCon,
     return kIOReturnSuccess;
 }
 
-void MateBookAudioDevice::handleWillSleepGated() {
+void MedionAudioDevice::handleWillSleepGated() {
     fastMute();
 }
 
-void MateBookAudioDevice::handleClamshellChangeGated(bool closed) {
+void MedionAudioDevice::handleClamshellChangeGated(bool closed) {
     if (flagsBuf) {
         UInt8 *flags = (UInt8 *)flagsBuf->getBytesNoCopy();
         if (flags) flags[kCmlSOF_FlagOff_ClamshellMuted] = closed ? 1 : 0;
@@ -1827,14 +1689,14 @@ void MateBookAudioDevice::handleClamshellChangeGated(bool closed) {
     }
 }
 
-IOReturn MateBookAudioDevice::setPowerState(unsigned long ordinal, IOService *whatDevice) {
+IOReturn MedionAudioDevice::setPowerState(unsigned long ordinal, IOService *whatDevice) {
     if (commandGate) {
-        return commandGate->runAction(&MateBookAudioDevice::s_setPowerState, (void *)ordinal);
+        return commandGate->runAction(&MedionAudioDevice::s_setPowerState, (void *)ordinal);
     }
     return setPowerStateGated(ordinal);
 }
 
-IOReturn MateBookAudioDevice::setPowerStateGated(unsigned long ordinal) {
+IOReturn MedionAudioDevice::setPowerStateGated(unsigned long ordinal) {
     if (ordinal == 0) {
         // Going to sleep
         fastMute();
@@ -1843,12 +1705,12 @@ IOReturn MateBookAudioDevice::setPowerStateGated(unsigned long ordinal) {
         // Wake: BAR already mapped; DSP stays deferred until UserClient TriggerInitDSP
         codec.init();
         codec.configure(); /* configures route + DAC unmuted */
-        if (captureSource == 1) codec.setHeadsetMic(true);
+        codec.setCaptureMic(captureSource == 1);
     }
     return IOPMAckImplied;
 }
 
-void MateBookAudioDevice::shutdownForSleepGated() {
+void MedionAudioDevice::shutdownForSleepGated() {
     codec.mute(true);
     codec.silenceAmps();
     hwReady = false;
@@ -1856,7 +1718,7 @@ void MateBookAudioDevice::shutdownForSleepGated() {
     isCapturing = false;
 }
 
-void MateBookAudioDevice::shutdownDSPGated() {
+void MedionAudioDevice::shutdownDSPGated() {
     codec.mute(true);
     codec.silenceAmps();
     hwReady = false;
@@ -1865,111 +1727,111 @@ void MateBookAudioDevice::shutdownDSPGated() {
 }
 
 // IOCommandGate Static Wrappers
-IOReturn MateBookAudioDevice::s_setPowerState(OSObject *o, void *a0, void *, void *, void *) {
-    return static_cast<MateBookAudioDevice *>(o)->setPowerStateGated((unsigned long)a0);
+IOReturn MedionAudioDevice::s_setPowerState(OSObject *o, void *a0, void *, void *, void *) {
+    return static_cast<MedionAudioDevice *>(o)->setPowerStateGated((unsigned long)a0);
 }
-IOReturn MateBookAudioDevice::s_startPlayback(OSObject *o, void *, void *, void *, void *) {
-    return static_cast<MateBookAudioDevice *>(o)->startPlaybackGated();
+IOReturn MedionAudioDevice::s_startPlayback(OSObject *o, void *, void *, void *, void *) {
+    return static_cast<MedionAudioDevice *>(o)->startPlaybackGated();
 }
-IOReturn MateBookAudioDevice::s_stopPlayback(OSObject *o, void *, void *, void *, void *) {
-    return static_cast<MateBookAudioDevice *>(o)->stopPlaybackGated();
+IOReturn MedionAudioDevice::s_stopPlayback(OSObject *o, void *, void *, void *, void *) {
+    return static_cast<MedionAudioDevice *>(o)->stopPlaybackGated();
 }
-IOReturn MateBookAudioDevice::s_startCapture(OSObject *o, void *, void *, void *, void *) {
-    return static_cast<MateBookAudioDevice *>(o)->startCaptureGated();
+IOReturn MedionAudioDevice::s_startCapture(OSObject *o, void *, void *, void *, void *) {
+    return static_cast<MedionAudioDevice *>(o)->startCaptureGated();
 }
-IOReturn MateBookAudioDevice::s_stopCapture(OSObject *o, void *, void *, void *, void *) {
-    return static_cast<MateBookAudioDevice *>(o)->stopCaptureGated();
+IOReturn MedionAudioDevice::s_stopCapture(OSObject *o, void *, void *, void *, void *) {
+    return static_cast<MedionAudioDevice *>(o)->stopCaptureGated();
 }
-IOReturn MateBookAudioDevice::s_handleWillSleep(OSObject *o, void *, void *, void *, void *) {
-    static_cast<MateBookAudioDevice *>(o)->handleWillSleepGated();
+IOReturn MedionAudioDevice::s_handleWillSleep(OSObject *o, void *, void *, void *, void *) {
+    static_cast<MedionAudioDevice *>(o)->handleWillSleepGated();
     return kIOReturnSuccess;
 }
-IOReturn MateBookAudioDevice::s_handleClamshellChange(OSObject *o, void *closed, void *, void *, void *) {
-    static_cast<MateBookAudioDevice *>(o)->handleClamshellChangeGated((bool)(uintptr_t)closed);
+IOReturn MedionAudioDevice::s_handleClamshellChange(OSObject *o, void *closed, void *, void *, void *) {
+    static_cast<MedionAudioDevice *>(o)->handleClamshellChangeGated((bool)(uintptr_t)closed);
     return kIOReturnSuccess;
 }
 
-IOReturn MateBookAudioDevice::startPlayback() {
-    if (commandGate) return commandGate->runAction(&MateBookAudioDevice::s_startPlayback);
+IOReturn MedionAudioDevice::startPlayback() {
+    if (commandGate) return commandGate->runAction(&MedionAudioDevice::s_startPlayback);
     return startPlaybackGated();
 }
-IOReturn MateBookAudioDevice::stopPlayback() {
-    if (commandGate) return commandGate->runAction(&MateBookAudioDevice::s_stopPlayback);
+IOReturn MedionAudioDevice::stopPlayback() {
+    if (commandGate) return commandGate->runAction(&MedionAudioDevice::s_stopPlayback);
     return stopPlaybackGated();
 }
-IOReturn MateBookAudioDevice::startCapture() {
-    if (commandGate) return commandGate->runAction(&MateBookAudioDevice::s_startCapture);
+IOReturn MedionAudioDevice::startCapture() {
+    if (commandGate) return commandGate->runAction(&MedionAudioDevice::s_startCapture);
     return startCaptureGated();
 }
-IOReturn MateBookAudioDevice::stopCapture() {
-    if (commandGate) return commandGate->runAction(&MateBookAudioDevice::s_stopCapture);
+IOReturn MedionAudioDevice::stopCapture() {
+    if (commandGate) return commandGate->runAction(&MedionAudioDevice::s_stopCapture);
     return stopCaptureGated();
 }
 
 // ==================== UserClient Implementation ====================
 
-OSDefineMetaClassAndStructors(MateBookAudioUserClient, IOUserClient)
+OSDefineMetaClassAndStructors(MedionAudioUserClient, IOUserClient)
 
-const IOExternalMethodDispatch MateBookAudioUserClient::sMethods[kCmlSOF_MethodCount] = {
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sStart,            0, 0, 0, 0 }, // 0
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sStop,             0, 0, 0, 0 }, // 1
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sGetPos,           0, 0, 1, 0 }, // 2
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sUpdateSPIB,       1, 0, 0, 0 }, // 3
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sStartCap,         0, 0, 0, 0 }, // 4
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sStopCap,          0, 0, 0, 0 }, // 5
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sGetCapPos,        0, 0, 1, 0 }, // 6
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sTriggerInitDSP,   0, 0, 0, 0 }, // 7
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sReadBAR0_8,       1, 0, 1, 0 }, // 8
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sReadBAR0_16,      1, 0, 1, 0 }, // 9
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sReadBAR0_32,      1, 0, 1, 0 }, // 10
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sWriteBAR0_8,      2, 0, 0, 0 }, // 11
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sWriteBAR0_16,     2, 0, 0, 0 }, // 12
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sWriteBAR0_32,     2, 0, 0, 0 }, // 13
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sReadBAR4_8,       1, 0, 1, 0 }, // 14
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sReadBAR4_16,      1, 0, 1, 0 }, // 15
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sReadBAR4_32,      1, 0, 1, 0 }, // 16
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sWriteBAR4_8,      2, 0, 0, 0 }, // 17
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sWriteBAR4_16,     2, 0, 0, 0 }, // 18
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sWriteBAR4_32,     2, 0, 0, 0 }, // 19
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sReadBAR4_64,      1, 0, 2, 0 }, // 20 lo,hi
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sWriteBAR4_64,     3, 0, 0, 0 }, // 21 off,lo,hi
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sReadGPIO32,       1, 0, 1, 0 }, // 22
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sWriteGPIO32,      2, 0, 0, 0 }, // 23
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sI2CWriteReg,      2, 0, 0, 0 }, // 24
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sI2CReadReg,       1, 0, 1, 0 }, // 25
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sGetPhysicalAddrs, 0, 0, 5, 0 }, // 26 play,cap,flags,fw,fwBdl
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sForceResetDSP,    0, 0, 0, 0 }, // 27
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sInitDSPFromStaging, 1, 0, 0, 0 }, // 28 stagedLen
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sGetFwPhys,        0, 0, 1, 0 }, // 29
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sSetFwStagingLen,  1, 0, 0, 0 }, // 30
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sSetCaptureSource, 1, 0, 0, 0 }, // 31 0=DMIC 1=headset
-    { (IOExternalMethodAction)&MateBookAudioUserClient::sSetTuning,        2, 0, 0, 0 }, // 32 id,value
+const IOExternalMethodDispatch MedionAudioUserClient::sMethods[kCmlSOF_MethodCount] = {
+    { (IOExternalMethodAction)&MedionAudioUserClient::sStart,            0, 0, 0, 0 }, // 0
+    { (IOExternalMethodAction)&MedionAudioUserClient::sStop,             0, 0, 0, 0 }, // 1
+    { (IOExternalMethodAction)&MedionAudioUserClient::sGetPos,           0, 0, 1, 0 }, // 2
+    { (IOExternalMethodAction)&MedionAudioUserClient::sUpdateSPIB,       1, 0, 0, 0 }, // 3
+    { (IOExternalMethodAction)&MedionAudioUserClient::sStartCap,         0, 0, 0, 0 }, // 4
+    { (IOExternalMethodAction)&MedionAudioUserClient::sStopCap,          0, 0, 0, 0 }, // 5
+    { (IOExternalMethodAction)&MedionAudioUserClient::sGetCapPos,        0, 0, 1, 0 }, // 6
+    { (IOExternalMethodAction)&MedionAudioUserClient::sTriggerInitDSP,   0, 0, 0, 0 }, // 7
+    { (IOExternalMethodAction)&MedionAudioUserClient::sReadBAR0_8,       1, 0, 1, 0 }, // 8
+    { (IOExternalMethodAction)&MedionAudioUserClient::sReadBAR0_16,      1, 0, 1, 0 }, // 9
+    { (IOExternalMethodAction)&MedionAudioUserClient::sReadBAR0_32,      1, 0, 1, 0 }, // 10
+    { (IOExternalMethodAction)&MedionAudioUserClient::sWriteBAR0_8,      2, 0, 0, 0 }, // 11
+    { (IOExternalMethodAction)&MedionAudioUserClient::sWriteBAR0_16,     2, 0, 0, 0 }, // 12
+    { (IOExternalMethodAction)&MedionAudioUserClient::sWriteBAR0_32,     2, 0, 0, 0 }, // 13
+    { (IOExternalMethodAction)&MedionAudioUserClient::sReadBAR4_8,       1, 0, 1, 0 }, // 14
+    { (IOExternalMethodAction)&MedionAudioUserClient::sReadBAR4_16,      1, 0, 1, 0 }, // 15
+    { (IOExternalMethodAction)&MedionAudioUserClient::sReadBAR4_32,      1, 0, 1, 0 }, // 16
+    { (IOExternalMethodAction)&MedionAudioUserClient::sWriteBAR4_8,      2, 0, 0, 0 }, // 17
+    { (IOExternalMethodAction)&MedionAudioUserClient::sWriteBAR4_16,     2, 0, 0, 0 }, // 18
+    { (IOExternalMethodAction)&MedionAudioUserClient::sWriteBAR4_32,     2, 0, 0, 0 }, // 19
+    { (IOExternalMethodAction)&MedionAudioUserClient::sReadBAR4_64,      1, 0, 2, 0 }, // 20 lo,hi
+    { (IOExternalMethodAction)&MedionAudioUserClient::sWriteBAR4_64,     3, 0, 0, 0 }, // 21 off,lo,hi
+    { (IOExternalMethodAction)&MedionAudioUserClient::sReadGPIO32,       1, 0, 1, 0 }, // 22
+    { (IOExternalMethodAction)&MedionAudioUserClient::sWriteGPIO32,      2, 0, 0, 0 }, // 23
+    { (IOExternalMethodAction)&MedionAudioUserClient::sI2CWriteReg,      2, 0, 0, 0 }, // 24
+    { (IOExternalMethodAction)&MedionAudioUserClient::sI2CReadReg,       1, 0, 1, 0 }, // 25
+    { (IOExternalMethodAction)&MedionAudioUserClient::sGetPhysicalAddrs, 0, 0, 5, 0 }, // 26 play,cap,flags,fw,fwBdl
+    { (IOExternalMethodAction)&MedionAudioUserClient::sForceResetDSP,    0, 0, 0, 0 }, // 27
+    { (IOExternalMethodAction)&MedionAudioUserClient::sInitDSPFromStaging, 1, 0, 0, 0 }, // 28 stagedLen
+    { (IOExternalMethodAction)&MedionAudioUserClient::sGetFwPhys,        0, 0, 1, 0 }, // 29
+    { (IOExternalMethodAction)&MedionAudioUserClient::sSetFwStagingLen,  1, 0, 0, 0 }, // 30
+    { (IOExternalMethodAction)&MedionAudioUserClient::sSetCaptureSource, 1, 0, 0, 0 }, // 31 0=internal MIC1 1=headset MIC2
+    { (IOExternalMethodAction)&MedionAudioUserClient::sSetTuning,        2, 0, 0, 0 }, // 32 id,value
 };
 
-bool MateBookAudioUserClient::initWithTask(task_t owningTask, void *sec, UInt32 type) {
+bool MedionAudioUserClient::initWithTask(task_t owningTask, void *sec, UInt32 type) {
     if (!IOUserClient::initWithTask(owningTask, sec, type)) return false;
     clientTask = owningTask;
     device = nullptr;
     return true;
 }
 
-bool MateBookAudioUserClient::start(IOService *provider) {
+bool MedionAudioUserClient::start(IOService *provider) {
     if (!IOUserClient::start(provider)) return false;
-    device = OSDynamicCast(MateBookAudioDevice, provider);
+    device = OSDynamicCast(MedionAudioDevice, provider);
     return (device != nullptr);
 }
 
-void MateBookAudioUserClient::stop(IOService *provider) {
+void MedionAudioUserClient::stop(IOService *provider) {
     device = nullptr;
     IOUserClient::stop(provider);
 }
 
-IOReturn MateBookAudioUserClient::clientClose() {
+IOReturn MedionAudioUserClient::clientClose() {
     terminate();
     return kIOReturnSuccess;
 }
 
-IOReturn MateBookAudioUserClient::clientMemoryForType(UInt32 type, IOOptionBits *options,
+IOReturn MedionAudioUserClient::clientMemoryForType(UInt32 type, IOOptionBits *options,
                                                       IOMemoryDescriptor **memory) {
     if (!device) return kIOReturnNotAttached;
     switch (type) {
@@ -2007,7 +1869,7 @@ IOReturn MateBookAudioUserClient::clientMemoryForType(UInt32 type, IOOptionBits 
     }
 }
 
-IOReturn MateBookAudioUserClient::externalMethod(uint32_t sel, IOExternalMethodArguments *args,
+IOReturn MedionAudioUserClient::externalMethod(uint32_t sel, IOExternalMethodArguments *args,
                                                 IOExternalMethodDispatch *disp, OSObject *tgt,
                                                 void *ref) {
     if (sel >= kCmlSOF_MethodCount) return kIOReturnBadArgument;
@@ -2016,34 +1878,34 @@ IOReturn MateBookAudioUserClient::externalMethod(uint32_t sel, IOExternalMethodA
     return IOUserClient::externalMethod(sel, args, disp, tgt, ref);
 }
 
-IOReturn MateBookAudioUserClient::sStart(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *) {
+IOReturn MedionAudioUserClient::sStart(MedionAudioUserClient *t, void *, IOExternalMethodArguments *) {
     return t->device ? t->device->startPlayback() : kIOReturnNotAttached;
 }
-IOReturn MateBookAudioUserClient::sStop(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *) {
+IOReturn MedionAudioUserClient::sStop(MedionAudioUserClient *t, void *, IOExternalMethodArguments *) {
     return t->device ? t->device->stopPlayback() : kIOReturnNotAttached;
 }
-IOReturn MateBookAudioUserClient::sGetPos(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *a) {
+IOReturn MedionAudioUserClient::sGetPos(MedionAudioUserClient *t, void *, IOExternalMethodArguments *a) {
     if (!t->device) return kIOReturnNotAttached;
     a->scalarOutput[0] = t->device->getSamplePosition();
     a->scalarOutputCount = 1;
     return kIOReturnSuccess;
 }
-IOReturn MateBookAudioUserClient::sUpdateSPIB(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *a) {
+IOReturn MedionAudioUserClient::sUpdateSPIB(MedionAudioUserClient *t, void *, IOExternalMethodArguments *a) {
     return t->device ? t->device->updateSPIB((UInt32)a->scalarInput[0]) : kIOReturnNotAttached;
 }
-IOReturn MateBookAudioUserClient::sStartCap(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *) {
+IOReturn MedionAudioUserClient::sStartCap(MedionAudioUserClient *t, void *, IOExternalMethodArguments *) {
     return t->device ? t->device->startCapture() : kIOReturnNotAttached;
 }
-IOReturn MateBookAudioUserClient::sStopCap(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *) {
+IOReturn MedionAudioUserClient::sStopCap(MedionAudioUserClient *t, void *, IOExternalMethodArguments *) {
     return t->device ? t->device->stopCapture() : kIOReturnNotAttached;
 }
-IOReturn MateBookAudioUserClient::sGetCapPos(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *a) {
+IOReturn MedionAudioUserClient::sGetCapPos(MedionAudioUserClient *t, void *, IOExternalMethodArguments *a) {
     if (!t->device) return kIOReturnNotAttached;
     a->scalarOutput[0] = t->device->getCapturePosition();
     a->scalarOutputCount = 1;
     return kIOReturnSuccess;
 }
-IOReturn MateBookAudioUserClient::sTriggerInitDSP(MateBookAudioUserClient *t, void *,
+IOReturn MedionAudioUserClient::sTriggerInitDSP(MedionAudioUserClient *t, void *,
                                                   IOExternalMethodArguments *) {
     if (!t->device) return kIOReturnNotAttached;
     /* Force re-run: call ForceResetDSP first (clears hwReady). */
@@ -2051,12 +1913,12 @@ IOReturn MateBookAudioUserClient::sTriggerInitDSP(MateBookAudioUserClient *t, vo
     if (ok) {
         t->device->setProperty("DSPStatus", "Active");
         if (t->device->pciDevice)
-            t->device->pciDevice->setProperty("MateBookAudioDSPStatus", "Active");
+            t->device->pciDevice->setProperty("MedionAudioDSPStatus", "Active");
     }
     return ok ? kIOReturnSuccess : kIOReturnIOError;
 }
 
-static IOReturn ucReadBar(MateBookAudioDevice *dev, UInt32 which, UInt32 width,
+static IOReturn ucReadBar(MedionAudioDevice *dev, UInt32 which, UInt32 width,
                           IOExternalMethodArguments *a) {
     if (!dev || !a || a->scalarInputCount < 1) return kIOReturnBadArgument;
     UInt64 val = 0;
@@ -2075,7 +1937,7 @@ static IOReturn ucReadBar(MateBookAudioDevice *dev, UInt32 which, UInt32 width,
     return kIOReturnSuccess;
 }
 
-static IOReturn ucWriteBar(MateBookAudioDevice *dev, UInt32 which, UInt32 width,
+static IOReturn ucWriteBar(MedionAudioDevice *dev, UInt32 which, UInt32 width,
                            IOExternalMethodArguments *a) {
     if (!dev || !a) return kIOReturnBadArgument;
     if (width == 8) {
@@ -2091,50 +1953,50 @@ static IOReturn ucWriteBar(MateBookAudioDevice *dev, UInt32 which, UInt32 width,
         : dev->writeBAR4(width, (UInt32)a->scalarInput[0], a->scalarInput[1]);
 }
 
-IOReturn MateBookAudioUserClient::sReadBAR0_8(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *a) {
+IOReturn MedionAudioUserClient::sReadBAR0_8(MedionAudioUserClient *t, void *, IOExternalMethodArguments *a) {
     return t ? ucReadBar(t->device, 0, 1, a) : kIOReturnNotAttached;
 }
-IOReturn MateBookAudioUserClient::sReadBAR0_16(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *a) {
+IOReturn MedionAudioUserClient::sReadBAR0_16(MedionAudioUserClient *t, void *, IOExternalMethodArguments *a) {
     return t ? ucReadBar(t->device, 0, 2, a) : kIOReturnNotAttached;
 }
-IOReturn MateBookAudioUserClient::sReadBAR0_32(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *a) {
+IOReturn MedionAudioUserClient::sReadBAR0_32(MedionAudioUserClient *t, void *, IOExternalMethodArguments *a) {
     return t ? ucReadBar(t->device, 0, 4, a) : kIOReturnNotAttached;
 }
-IOReturn MateBookAudioUserClient::sWriteBAR0_8(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *a) {
+IOReturn MedionAudioUserClient::sWriteBAR0_8(MedionAudioUserClient *t, void *, IOExternalMethodArguments *a) {
     return t ? ucWriteBar(t->device, 0, 1, a) : kIOReturnNotAttached;
 }
-IOReturn MateBookAudioUserClient::sWriteBAR0_16(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *a) {
+IOReturn MedionAudioUserClient::sWriteBAR0_16(MedionAudioUserClient *t, void *, IOExternalMethodArguments *a) {
     return t ? ucWriteBar(t->device, 0, 2, a) : kIOReturnNotAttached;
 }
-IOReturn MateBookAudioUserClient::sWriteBAR0_32(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *a) {
+IOReturn MedionAudioUserClient::sWriteBAR0_32(MedionAudioUserClient *t, void *, IOExternalMethodArguments *a) {
     return t ? ucWriteBar(t->device, 0, 4, a) : kIOReturnNotAttached;
 }
-IOReturn MateBookAudioUserClient::sReadBAR4_8(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *a) {
+IOReturn MedionAudioUserClient::sReadBAR4_8(MedionAudioUserClient *t, void *, IOExternalMethodArguments *a) {
     return t ? ucReadBar(t->device, 4, 1, a) : kIOReturnNotAttached;
 }
-IOReturn MateBookAudioUserClient::sReadBAR4_16(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *a) {
+IOReturn MedionAudioUserClient::sReadBAR4_16(MedionAudioUserClient *t, void *, IOExternalMethodArguments *a) {
     return t ? ucReadBar(t->device, 4, 2, a) : kIOReturnNotAttached;
 }
-IOReturn MateBookAudioUserClient::sReadBAR4_32(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *a) {
+IOReturn MedionAudioUserClient::sReadBAR4_32(MedionAudioUserClient *t, void *, IOExternalMethodArguments *a) {
     return t ? ucReadBar(t->device, 4, 4, a) : kIOReturnNotAttached;
 }
-IOReturn MateBookAudioUserClient::sWriteBAR4_8(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *a) {
+IOReturn MedionAudioUserClient::sWriteBAR4_8(MedionAudioUserClient *t, void *, IOExternalMethodArguments *a) {
     return t ? ucWriteBar(t->device, 4, 1, a) : kIOReturnNotAttached;
 }
-IOReturn MateBookAudioUserClient::sWriteBAR4_16(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *a) {
+IOReturn MedionAudioUserClient::sWriteBAR4_16(MedionAudioUserClient *t, void *, IOExternalMethodArguments *a) {
     return t ? ucWriteBar(t->device, 4, 2, a) : kIOReturnNotAttached;
 }
-IOReturn MateBookAudioUserClient::sWriteBAR4_32(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *a) {
+IOReturn MedionAudioUserClient::sWriteBAR4_32(MedionAudioUserClient *t, void *, IOExternalMethodArguments *a) {
     return t ? ucWriteBar(t->device, 4, 4, a) : kIOReturnNotAttached;
 }
-IOReturn MateBookAudioUserClient::sReadBAR4_64(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *a) {
+IOReturn MedionAudioUserClient::sReadBAR4_64(MedionAudioUserClient *t, void *, IOExternalMethodArguments *a) {
     return t ? ucReadBar(t->device, 4, 8, a) : kIOReturnNotAttached;
 }
-IOReturn MateBookAudioUserClient::sWriteBAR4_64(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *a) {
+IOReturn MedionAudioUserClient::sWriteBAR4_64(MedionAudioUserClient *t, void *, IOExternalMethodArguments *a) {
     return t ? ucWriteBar(t->device, 4, 8, a) : kIOReturnNotAttached;
 }
 
-IOReturn MateBookAudioUserClient::sReadGPIO32(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *a) {
+IOReturn MedionAudioUserClient::sReadGPIO32(MedionAudioUserClient *t, void *, IOExternalMethodArguments *a) {
     if (!t || !t->device || !a || a->scalarInputCount < 1) return kIOReturnBadArgument;
     UInt32 val = 0;
     IOReturn r = t->device->readGPIO32((UInt32)a->scalarInput[0], &val);
@@ -2144,17 +2006,17 @@ IOReturn MateBookAudioUserClient::sReadGPIO32(MateBookAudioUserClient *t, void *
     return kIOReturnSuccess;
 }
 
-IOReturn MateBookAudioUserClient::sWriteGPIO32(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *a) {
+IOReturn MedionAudioUserClient::sWriteGPIO32(MedionAudioUserClient *t, void *, IOExternalMethodArguments *a) {
     if (!t || !t->device || !a || a->scalarInputCount < 2) return kIOReturnBadArgument;
     return t->device->writeGPIO32((UInt32)a->scalarInput[0], (UInt32)a->scalarInput[1]);
 }
 
-IOReturn MateBookAudioUserClient::sI2CWriteReg(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *a) {
+IOReturn MedionAudioUserClient::sI2CWriteReg(MedionAudioUserClient *t, void *, IOExternalMethodArguments *a) {
     if (!t || !t->device || !a || a->scalarInputCount < 2) return kIOReturnBadArgument;
     return t->device->i2cWriteReg((UInt8)a->scalarInput[0], (UInt8)a->scalarInput[1]);
 }
 
-IOReturn MateBookAudioUserClient::sI2CReadReg(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *a) {
+IOReturn MedionAudioUserClient::sI2CReadReg(MedionAudioUserClient *t, void *, IOExternalMethodArguments *a) {
     if (!t || !t->device || !a || a->scalarInputCount < 1) return kIOReturnBadArgument;
     UInt8 val = 0;
     IOReturn r = t->device->i2cReadReg((UInt8)a->scalarInput[0], &val);
@@ -2164,7 +2026,7 @@ IOReturn MateBookAudioUserClient::sI2CReadReg(MateBookAudioUserClient *t, void *
     return kIOReturnSuccess;
 }
 
-IOReturn MateBookAudioUserClient::sGetPhysicalAddrs(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *a) {
+IOReturn MedionAudioUserClient::sGetPhysicalAddrs(MedionAudioUserClient *t, void *, IOExternalMethodArguments *a) {
     if (!t || !t->device || !a) return kIOReturnBadArgument;
     UInt64 play = 0, cap = 0, flags = 0, fw = 0;
     IOReturn r = t->device->getPhysicalAddrs(&play, &cap, &flags);
@@ -2179,11 +2041,11 @@ IOReturn MateBookAudioUserClient::sGetPhysicalAddrs(MateBookAudioUserClient *t, 
     return kIOReturnSuccess;
 }
 
-IOReturn MateBookAudioUserClient::sForceResetDSP(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *) {
+IOReturn MedionAudioUserClient::sForceResetDSP(MedionAudioUserClient *t, void *, IOExternalMethodArguments *) {
     return t && t->device ? t->device->forceResetDSP() : kIOReturnNotAttached;
 }
 
-IOReturn MateBookAudioUserClient::sInitDSPFromStaging(MateBookAudioUserClient *t, void *,
+IOReturn MedionAudioUserClient::sInitDSPFromStaging(MedionAudioUserClient *t, void *,
                                                       IOExternalMethodArguments *a) {
     if (!t || !t->device) return kIOReturnNotAttached;
     if (a && a->scalarInputCount >= 1) {
@@ -2195,12 +2057,12 @@ IOReturn MateBookAudioUserClient::sInitDSPFromStaging(MateBookAudioUserClient *t
     if (ok) {
         t->device->setProperty("DSPStatus", "Active");
         if (t->device->pciDevice)
-            t->device->pciDevice->setProperty("MateBookAudioDSPStatus", "Active");
+            t->device->pciDevice->setProperty("MedionAudioDSPStatus", "Active");
     }
     return ok ? kIOReturnSuccess : kIOReturnIOError;
 }
 
-IOReturn MateBookAudioUserClient::sGetFwPhys(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *a) {
+IOReturn MedionAudioUserClient::sGetFwPhys(MedionAudioUserClient *t, void *, IOExternalMethodArguments *a) {
     if (!t || !t->device || !a) return kIOReturnBadArgument;
     UInt64 fw = 0;
     IOReturn r = t->device->getFwPhys(&fw);
@@ -2210,7 +2072,7 @@ IOReturn MateBookAudioUserClient::sGetFwPhys(MateBookAudioUserClient *t, void *,
     return kIOReturnSuccess;
 }
 
-IOReturn MateBookAudioUserClient::sSetFwStagingLen(MateBookAudioUserClient *t, void *,
+IOReturn MedionAudioUserClient::sSetFwStagingLen(MedionAudioUserClient *t, void *,
                                                    IOExternalMethodArguments *a) {
     if (!t || !t->device || !a || a->scalarInputCount < 1) return kIOReturnBadArgument;
     return t->device->setFwStagingLen((UInt32)a->scalarInput[0]);
@@ -2219,7 +2081,7 @@ IOReturn MateBookAudioUserClient::sSetFwStagingLen(MateBookAudioUserClient *t, v
 // ==================== Headset mic (SSP0.IN) ====================
 
 /* SSP0 DAI_CONFIG (same payload as playback) with HW_PARAMS / HW_FREE flags. */
-IOReturn MateBookAudioDevice::sspDaiConfig(UInt8 flags) {
+IOReturn MedionAudioDevice::sspDaiConfig(UInt8 flags) {
     if (!dspBase) return kIOReturnNotReady;
     UInt8 m[216] = {};
     *(UInt32*)(m+0)=216; *(UInt32*)(m+4)=0x80010000;
@@ -2252,45 +2114,47 @@ IOReturn MateBookAudioDevice::sspDaiConfig(UInt8 flags) {
     wr32(dspBase, IPC_HIPCIDA, rd32(dspBase, IPC_HIPCIDA) | IPC_DONE);
     wr32(dspBase, IPC_HIPCCTL, rd32(dspBase, IPC_HIPCCTL) | 0x03);
     drainDspIpc(dspBase);
-    if (replyErr) IOLog("MateBookAudio: SSP0 DAI_CONFIG flags=%u (capture) replyErr=0x%x\n", flags, replyErr);
+    if (replyErr) IOLog("MedionAudio: SSP0 DAI_CONFIG flags=%u (capture) replyErr=0x%x\n", flags, replyErr);
     return replyErr ? kIOReturnIOError : kIOReturnSuccess;
 }
 
-/* Switch DMIC <-> headset mic; a running capture is restarted on the other pipeline. */
-IOReturn MateBookAudioDevice::setCaptureSourceGated(UInt32 source) {
+/* Switch internal MIC1 <-> headset MIC2; the SSP0.IN pipeline is shared, so a
+ * running capture is restarted only to let the codec settle the analog path. */
+IOReturn MedionAudioDevice::setCaptureSourceGated(UInt32 source) {
     if (source > 1) return kIOReturnBadArgument;
     bool wasCapturing = isCapturing;
     if (source == captureSource) {
-        codec.setHeadsetMic(source == 1);
+        codec.setCaptureMic(source == 1);
         return kIOReturnSuccess;
     }
     if (wasCapturing) stopCaptureGated();
     captureSource = source;
-    codec.setHeadsetMic(source == 1);
+    codec.setCaptureMic(source == 1);
     if (wasCapturing) return startCaptureGated();
-    setProperty("CaptureSource", source ? "Headset MIC1/SSP0.IN" : "DMIC PIPE3");
+    setProperty("CaptureSource", source ? "Headset MIC2/SSP0.IN"
+                                       : "Internal MIC1/SSP0.IN");
     return kIOReturnSuccess;
 }
 
-IOReturn MateBookAudioDevice::s_setCaptureSource(OSObject *o, void *src, void *, void *, void *) {
-    return static_cast<MateBookAudioDevice *>(o)->setCaptureSourceGated((UInt32)(uintptr_t)src);
+IOReturn MedionAudioDevice::s_setCaptureSource(OSObject *o, void *src, void *, void *, void *) {
+    return static_cast<MedionAudioDevice *>(o)->setCaptureSourceGated((UInt32)(uintptr_t)src);
 }
 
-IOReturn MateBookAudioDevice::setCaptureSource(UInt32 source) {
+IOReturn MedionAudioDevice::setCaptureSource(UInt32 source) {
     if (!commandGate) return kIOReturnNotReady;
-    return commandGate->runAction(&MateBookAudioDevice::s_setCaptureSource, (void *)(uintptr_t)source);
+    return commandGate->runAction(&MedionAudioDevice::s_setCaptureSource, (void *)(uintptr_t)source);
 }
 
-IOReturn MateBookAudioUserClient::sSetCaptureSource(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *a) {
+IOReturn MedionAudioUserClient::sSetCaptureSource(MedionAudioUserClient *t, void *, IOExternalMethodArguments *a) {
     if (!t || !t->device) return kIOReturnNotAttached;
     return t->device->setCaptureSource((UInt32)a->scalarInput[0]);
 }
 
-IOReturn MateBookAudioUserClient::sSetTuning(MateBookAudioUserClient *t, void *, IOExternalMethodArguments *a) {
+IOReturn MedionAudioUserClient::sSetTuning(MedionAudioUserClient *t, void *, IOExternalMethodArguments *a) {
     if (!t || !t->device) return kIOReturnNotAttached;
     UInt64 id = a->scalarInput[0];
     if (id >= 8) return kIOReturnBadArgument;
     t->device->tuning[id] = (UInt32)a->scalarInput[1];
-    IOLog("MateBookAudio: tuning[%llu] = %u (applies at next DSP init)\n", id, t->device->tuning[id]);
+    IOLog("MedionAudio: tuning[%llu] = %u (applies at next DSP init)\n", id, t->device->tuning[id]);
     return kIOReturnSuccess;
 }
