@@ -1,7 +1,7 @@
 # MedionAudio
 
 macOS audio driver for laptops using **Intel Sound Open Firmware (SOF) + Everest ES8326** —
-built for the **MEDION Akoya E15415** (Comet Lake, board `NP1xCM`).
+built for the **MEDION Akoya E15415** (Comet Lake, board `NP1xCM`) for Sequoia 15.8.x.
 
 This is an experimental fork of [OctoDevStudios/MateBookAudio](https://github.com/OctoDevStudios/MateBookAudio), originally developed for the Huawei MateBook D15. Thanks to the original author and contributors. The ES8326 port prioritizes the MEDION; **the original D15 is no longer supported by this branch**.
 
